@@ -1,0 +1,14 @@
+.env
+.build/
+chroot/
+local/
+cache/
+tmp/
+*.build.log
+*.tail100.build.log.txt
+*.contents
+*.files
+*.packages
+*.hybrid.iso
+*.hybrid.iso.zsync
+*.sha256sum

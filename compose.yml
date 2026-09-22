@@ -1,0 +1,14 @@
+services:
+  builder:
+    build: .
+    working_dir: /workdir
+    privileged: true
+    user: "0:0"
+    env_file: .env
+    environment:
+      BUILDER_CONTAINER: "1"
+    volumes:
+      - ./workdir:/workdir
+      - .:/builder:ro
+      - ${BUILD_LOCAL}:${BUILD_LOCAL}
+      - ${BUILD_JAHITAN_PATH}:${BUILD_JAHITAN_PATH}

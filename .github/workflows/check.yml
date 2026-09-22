@@ -1,0 +1,44 @@
+name: Check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check shell script
+        run: |
+          bash -n build-iso
+          test -x build-iso
+
+      - name: Validate Compose configuration
+        run: |
+          set -eu
+          umask 077
+          cp .env.example .env
+          trap 'rm -f .env' EXIT
+          {
+            printf 'BUILD_LOCAL=%s\n' "$GITHUB_WORKSPACE"
+            printf 'BUILD_LOCKFILE=%s\n' '/tmp/blankon-build.lock'
+            printf 'BUILD_JAHITAN_PATH=%s\n' '/tmp/blankon-jahitan'
+            printf 'BUILD_PUBLISH_URL=%s\n' 'https://example.invalid/iso'
+          } >> .env
+          docker compose --project-directory "$GITHUB_WORKSPACE" --env-file .env config --quiet
+
+      - name: Build Docker image
+        run: |
+          set -eu
+          umask 077
+          cp .env.example .env
+          trap 'rm -f .env' EXIT
+          {
+            printf 'BUILD_LOCAL=%s\n' "$GITHUB_WORKSPACE"
+            printf 'BUILD_LOCKFILE=%s\n' '/tmp/blankon-build.lock'
+            printf 'BUILD_JAHITAN_PATH=%s\n' '/tmp/blankon-jahitan'
+            printf 'BUILD_PUBLISH_URL=%s\n' 'https://example.invalid/iso'
+          } >> .env
+          docker compose --project-directory "$GITHUB_WORKSPACE" --env-file .env build

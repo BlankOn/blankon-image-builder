@@ -4,6 +4,7 @@ chroot/
 local/
 cache/
 tmp/
+workdir/
 *.build.log
 *.tail100.build.log.txt
 *.contents

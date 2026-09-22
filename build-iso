@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -o pipefail
 
 # Load configuration from the repository directory, not the caller's directory.
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
@@ -13,6 +14,7 @@ MISSING_VARS=""
 [[ -z "$BUILD_LOCKFILE" ]] && MISSING_VARS="$MISSING_VARS BUILD_LOCKFILE"
 [[ -z "$BUILD_JAHITAN_PATH" ]] && MISSING_VARS="$MISSING_VARS BUILD_JAHITAN_PATH"
 [[ -z "$BUILD_PUBLISH_URL" ]] && MISSING_VARS="$MISSING_VARS BUILD_PUBLISH_URL"
+[[ -z "$BUILD_LOCAL" ]] && MISSING_VARS="$MISSING_VARS BUILD_LOCAL"
 if [[ -n "$MISSING_VARS" ]]; then
   echo "Error: The following environment variables are missing:$MISSING_VARS"
   echo "Please check your .env file."
@@ -90,18 +92,6 @@ prepare_build_tree() {
   IMAGE_NAME="blankon-live-image-$VARIANT-$ARCH"
 }
 
-if [[ -f "$BUILD_LOCKFILE" ]]; then
-    OLD_PID=$(cat "$BUILD_LOCKFILE")
-    if ps -p "$OLD_PID" > /dev/null 2>&1; then
-        echo "Error: Build already in progress (PID: $OLD_PID). Exiting."
-        exit 1
-    else
-        echo "Warning: Removing stale lock file from PID $OLD_PID"
-        rm -f "$BUILD_LOCKFILE"
-    fi
-fi
-echo $$ > "$BUILD_LOCKFILE"
-
 # Helper function
 send_telegram() {
     local message="$1"
@@ -111,6 +101,7 @@ send_telegram() {
 }
 
 cleanup() {
+    [[ -n "$BUILDER_CONTAINER" ]] || return
     rm -f "$BUILD_LOCKFILE"
     if [[ -n "$REPO" ]] && [[ -n "$BRANCH" ]]; then
         if [[ -n "$COMMIT_URL" ]]; then
@@ -133,8 +124,44 @@ FAILURE_REASON=""
 
 ## Args
 usage() {
-  echo "Usage: $0 --local <absolute-source-dir>"
+  echo "Usage: $0 --local <source-dir>"
   echo "       $0 --remote <repo> <branch> [commit]"
+}
+
+validate_host_root() {
+  [[ "$BUILD_LOCAL" == /* ]] || {
+    echo "Error: BUILD_LOCAL must be an absolute directory: $BUILD_LOCAL"
+    exit 2
+  }
+  [[ -d "$BUILD_LOCAL" ]] || {
+    echo "Error: BUILD_LOCAL directory not found: $BUILD_LOCAL"
+    exit 2
+  }
+  if ! BUILD_LOCAL_ROOT=$(realpath -- "$BUILD_LOCAL"); then
+    echo "Error: Cannot canonicalize BUILD_LOCAL: $BUILD_LOCAL"
+    exit 2
+  fi
+  export BUILD_LOCAL="$BUILD_LOCAL_ROOT"
+}
+
+run_in_container() {
+  [[ -f "$SCRIPT_DIR/.env" ]] || {
+    echo "Error: Environment file not found: $SCRIPT_DIR/.env"
+    exit 1
+  }
+  command -v docker >/dev/null 2>&1 || {
+    echo "Error: Docker is required but was not found in PATH."
+    exit 1
+  }
+  docker compose version >/dev/null 2>&1 || {
+    echo "Error: Docker Compose is required but is unavailable."
+    exit 1
+  }
+
+  BUILD_LOCAL="$BUILD_LOCAL_ROOT" docker compose \
+    --project-directory "$SCRIPT_DIR" \
+    --env-file "$SCRIPT_DIR/.env" \
+    run --build --rm builder /builder/build-iso "$@"
 }
 
 MODE=$1
@@ -142,12 +169,35 @@ LOCAL_SOURCE=""
 REPO=""
 BRANCH=""
 COMMIT=""
+if [[ -z "$BUILDER_CONTAINER" ]]; then
+  validate_host_root
+fi
 case "$MODE" in
   --local)
     [[ $# -eq 2 ]] || { usage; exit 2; }
-    [[ "$2" == /* ]] || { echo "Error: Local source path must be absolute: $2"; exit 2; }
-    [[ -d "$2" ]] || { echo "Error: Local source directory not found: $2"; exit 2; }
-    LOCAL_SOURCE=$2
+    if [[ -z "$BUILDER_CONTAINER" ]]; then
+      if [[ "$2" == /* ]]; then
+        SOURCE_CANDIDATE=$2
+      else
+        SOURCE_CANDIDATE="$BUILD_LOCAL_ROOT/$2"
+      fi
+      [[ -d "$SOURCE_CANDIDATE" ]] || {
+        echo "Error: Local source directory not found: $SOURCE_CANDIDATE"
+        exit 2
+      }
+      if ! LOCAL_SOURCE=$(realpath -- "$SOURCE_CANDIDATE"); then
+        echo "Error: Cannot canonicalize local source: $SOURCE_CANDIDATE"
+        exit 2
+      fi
+      if [[ "$BUILD_LOCAL_ROOT" != "/" && "$LOCAL_SOURCE" != "$BUILD_LOCAL_ROOT" && "$LOCAL_SOURCE" != "$BUILD_LOCAL_ROOT/"* ]]; then
+        echo "Error: Local source must stay under BUILD_LOCAL: $LOCAL_SOURCE"
+        exit 2
+      fi
+    else
+      [[ "$2" == /* ]] || { echo "Error: Local source path must be absolute: $2"; exit 2; }
+      [[ -d "$2" ]] || { echo "Error: Local source directory not found: $2"; exit 2; }
+      LOCAL_SOURCE=$2
+    fi
     ;;
   --remote)
     [[ $# -ge 3 && $# -le 4 ]] || { usage; exit 2; }
@@ -160,6 +210,27 @@ case "$MODE" in
     exit 2
     ;;
 esac
+if [[ -z "$BUILDER_CONTAINER" ]]; then
+  if [[ "$MODE" == "--local" ]]; then
+    run_in_container --local "$LOCAL_SOURCE"
+  else
+    run_in_container "$@"
+  fi
+  exit $?
+fi
+
+if [[ -f "$BUILD_LOCKFILE" ]]; then
+    OLD_PID=$(cat "$BUILD_LOCKFILE")
+    if ps -p "$OLD_PID" > /dev/null 2>&1; then
+        echo "Error: Build already in progress (PID: $OLD_PID). Exiting."
+        exit 1
+    else
+        echo "Warning: Removing stale lock file from PID $OLD_PID"
+        rm -f "$BUILD_LOCKFILE"
+    fi
+fi
+echo $$ > "$BUILD_LOCKFILE"
+
 REPO_NAME=$(echo "$REPO" | sed -E 's|.*github.com[:/]([^/]+/[^/.]+)(\.git)?|\1|')
 
 # Optional
@@ -179,7 +250,7 @@ then
   sudo lb clean
   sudo lb config --architectures $ARCH
   apply_archive_config
-  sudo time lb build --debug | sudo tee -a "$IMAGE_NAME.build.log"
+  sudo lb build --debug | sudo tee -a "$IMAGE_NAME.build.log"
   exit $?
 fi
 

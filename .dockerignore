@@ -1,0 +1,10 @@
+.git/
+.env
+workdir/
+*.build.log
+*.hybrid.iso
+*.packages
+*.files
+*.contents
+*.zsync
+*.sha256sum

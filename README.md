@@ -1,4 +1,4 @@
-# BlankOn live-builder
+# BlankOn image-builder
 
 Orchestration for building BlankOn live-build images. `build-iso` validates the
 request, then runs the build through Docker Compose in the privileged, root
@@ -26,7 +26,7 @@ Keep the two repositories as siblings below `BUILD_LOCAL`:
 
 ```text
 /srv/blankon/
-├── blankon-live-builder/
+├── blankon-image-builder/
 └── blankon-live-build/
 ```
 
@@ -34,9 +34,9 @@ Clone both repositories, then configure the builder:
 
 ```sh
 cd /srv/blankon
-git clone <builder-repo> blankon-live-builder
+git clone <builder-repo> blankon-image-builder
 git clone <live-build-repo> blankon-live-build
-cd blankon-live-builder
+cd blankon-image-builder
 cp .env.example .env
 ```
 
@@ -59,7 +59,7 @@ its contents into logs or issues.
 
 ## Local builds
 
-Run from `blankon-live-builder`:
+Run from `blankon-image-builder`:
 
 ```sh
 ./build-iso --local blankon-live-build

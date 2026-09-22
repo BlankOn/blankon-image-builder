@@ -49,7 +49,7 @@ Edit every required value in `.env`:
   concurrent builds.
 - `BUILD_PUBLISH_URL`: base URL used for published artifacts and their zsync
   metadata.
-- `BUILD_JAHITAN_PATH`: absolute, writable **host** directory for remote build
+- `BUILD_JAHITAN_PATH`: absolute, writable **host** directory for build
   output. It is mounted into the container at the same path.
 - `BUILD_LOCAL`: absolute, existing, readable **host** directory containing
   local source checkouts. It is mounted into the container at the same path.
@@ -102,8 +102,7 @@ docker compose --env-file .env build
 ```
 
 These commands validate Compose interpolation and build the Docker image only;
-they do not build an ISO or contact Telegram. CI performs shell syntax checks,
-Compose validation, and the image build, not an ISO build or Telegram delivery.
+they do not build an ISO or contact Telegram.
 
 ## Troubleshooting
 

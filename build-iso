@@ -1,36 +1,27 @@
 #!/usr/bin/env bash
 set -o pipefail
 
-# Load configuration from the repository directory, not the caller's directory.
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 
 if [[ -f "$SCRIPT_DIR/.env" ]]; then
   source "$SCRIPT_DIR/.env"
 fi
 
-# Make sure envar is set
-MISSING_VARS=""
-[[ -z "$TELEGRAM_BOT_KEY" ]] && MISSING_VARS="$MISSING_VARS TELEGRAM_BOT_KEY"
-[[ -z "$BUILD_LOCKFILE" ]] && MISSING_VARS="$MISSING_VARS BUILD_LOCKFILE"
-[[ -z "$BUILD_JAHITAN_PATH" ]] && MISSING_VARS="$MISSING_VARS BUILD_JAHITAN_PATH"
-[[ -z "$BUILD_PUBLISH_URL" ]] && MISSING_VARS="$MISSING_VARS BUILD_PUBLISH_URL"
-[[ -z "$BUILD_LOCAL" ]] && MISSING_VARS="$MISSING_VARS BUILD_LOCAL"
-if [[ -n "$MISSING_VARS" ]]; then
-  echo "Error: The following environment variables are missing:$MISSING_VARS"
-  echo "Please check your .env file."
-  exit 1
-fi
+validate_required_environment() {
+  MISSING_VARS=""
+  [[ -z "$TELEGRAM_BOT_KEY" ]] && MISSING_VARS="$MISSING_VARS TELEGRAM_BOT_KEY"
+  [[ -z "$BUILD_LOCKFILE" ]] && MISSING_VARS="$MISSING_VARS BUILD_LOCKFILE"
+  [[ -z "$BUILD_JAHITAN_PATH" ]] && MISSING_VARS="$MISSING_VARS BUILD_JAHITAN_PATH"
+  [[ -z "$BUILD_PUBLISH_URL" ]] && MISSING_VARS="$MISSING_VARS BUILD_PUBLISH_URL"
+  [[ -z "$BUILD_LOCAL" ]] && MISSING_VARS="$MISSING_VARS BUILD_LOCAL"
+  if [[ -n "$MISSING_VARS" ]]; then
+    echo "Error: The following environment variables are missing:$MISSING_VARS"
+    echo "Please check your .env file."
+    return 1
+  fi
+}
 
-# Which archive the ISO is built from, and the archive the installed system
-# is pointed at, both come from this file; see the comments in it.
 ARCHIVE_CONF="config/includes.chroot/etc/blankon/archive.conf"
-
-# "lb config" regenerates config/bootstrap, discarding any mirror values kept
-# there, so they are reapplied from ARCHIVE_CONF after every call.
-#
-# The daily build replaces config/ wholesale with the branch it just cloned,
-# so ARCHIVE_CONF is re-read on each call rather than once at startup: the
-# archive that branch asks for is the one that has to win.
 apply_archive_config() {
   local conf="config/bootstrap"
 
@@ -51,8 +42,6 @@ apply_archive_config() {
     return 1
   fi
 
-  # config/ is root-owned once the daily build copies it into place, so the
-  # rewrite goes through sudo regardless of who is running the build.
   sudo sed -i -E \
     "s#^(LB_(PARENT_)?MIRROR_[A-Z_]+=)\".*\"#\\1\"${ARCHIVE_URI}\"#" \
     "$conf"
@@ -92,7 +81,6 @@ prepare_build_tree() {
   IMAGE_NAME="blankon-live-image-$VARIANT-$ARCH"
 }
 
-# Helper function
 send_telegram() {
     local message="$1"
     curl -X POST -H 'Content-Type: application/json' \
@@ -110,10 +98,8 @@ cleanup() {
     fi
     if [[ -n "$BRANCH" ]] && [[ -n "$TODAY" ]]; then
         if [[ -n "$COMMIT_URL" ]]; then
-            # Clone succeeded, we have commit info
             send_telegram "💿 Jahitan harian $TODAY-$TODAY_COUNT [[ revisi <a href=\\\"$COMMIT_URL\\\">$COMMIT</a> ]] dari $REPO_NAME cabang $BRANCH $RESULT. $FAILURE_REASON $ACTION di ${BUILD_PUBLISH_URL}/$TODAY-$TODAY_COUNT/"
         else
-            # Clone failed, no commit info available
             send_telegram "💿 Jahitan harian $TODAY-$TODAY_COUNT dari $REPO_NAME cabang $BRANCH $RESULT. $FAILURE_REASON $ACTION di ${BUILD_PUBLISH_URL}/$TODAY-$TODAY_COUNT/"
         fi
     fi
@@ -169,18 +155,21 @@ finalize_build() {
     sudo umount "$(mount | grep live-build | cut -d ' ' -f 3)" || true
 }
 
-# Setup trap
-trap cleanup EXIT
-
-## Default messages
-RESULT="gagal terbit ❌"
-ACTION="Log build dapat disimak"
-FAILURE_REASON=""
-
-## Args
 usage() {
   echo "Usage: $0 --local <source-dir>"
   echo "       $0 --remote <repo> <branch> [commit]"
+}
+
+initialize_runtime_state() {
+  trap cleanup EXIT
+  RESULT="gagal terbit ❌"
+  ACTION="Log build dapat disimak"
+  FAILURE_REASON=""
+  LOCAL_SOURCE=""
+  REPO=""
+  BRANCH=""
+  COMMIT=""
+  LOCK_ACQUIRED=0
 }
 
 validate_host_root() {
@@ -197,6 +186,57 @@ validate_host_root() {
     exit 2
   fi
   export BUILD_LOCAL="$BUILD_LOCAL_ROOT"
+}
+
+parse_local_source() {
+  local source_candidate="$1"
+
+  if [[ -z "$BUILDER_CONTAINER" ]]; then
+    if [[ "$source_candidate" == /* ]]; then
+      SOURCE_CANDIDATE=$source_candidate
+    else
+      SOURCE_CANDIDATE="$BUILD_LOCAL_ROOT/$source_candidate"
+    fi
+    [[ -d "$SOURCE_CANDIDATE" ]] || {
+      echo "Error: Local source directory not found: $SOURCE_CANDIDATE"
+      exit 2
+    }
+    if ! LOCAL_SOURCE=$(realpath -- "$SOURCE_CANDIDATE"); then
+      echo "Error: Cannot canonicalize local source: $SOURCE_CANDIDATE"
+      exit 2
+    fi
+    if [[ "$BUILD_LOCAL_ROOT" != "/" && "$LOCAL_SOURCE" != "$BUILD_LOCAL_ROOT" && "$LOCAL_SOURCE" != "$BUILD_LOCAL_ROOT/"* ]]; then
+      echo "Error: Local source must stay under BUILD_LOCAL: $LOCAL_SOURCE"
+      exit 2
+    fi
+  else
+    [[ "$source_candidate" == /* ]] || { echo "Error: Local source path must be absolute: $source_candidate"; exit 2; }
+    [[ -d "$source_candidate" ]] || { echo "Error: Local source directory not found: $source_candidate"; exit 2; }
+    LOCAL_SOURCE=$source_candidate
+  fi
+}
+
+parse_arguments() {
+  MODE=$1
+  if [[ -z "$BUILDER_CONTAINER" ]]; then
+    validate_host_root
+  fi
+  case "$MODE" in
+    --local)
+      [[ $# -eq 2 ]] || { usage; exit 2; }
+      parse_local_source "$2"
+      ;;
+    --remote)
+      [[ $# -ge 3 && $# -le 4 ]] || { usage; exit 2; }
+      REPO=$2
+      BRANCH=$3
+      COMMIT=${4:-}
+      ;;
+    *)
+      usage
+      exit 2
+      ;;
+  esac
 }
 
 run_in_container() {
@@ -219,109 +259,71 @@ run_in_container() {
     run --build --rm builder /builder/build-iso "$@"
 }
 
-MODE=$1
-LOCAL_SOURCE=""
-REPO=""
-BRANCH=""
-COMMIT=""
-LOCK_ACQUIRED=0
-if [[ -z "$BUILDER_CONTAINER" ]]; then
-  validate_host_root
-fi
-case "$MODE" in
-  --local)
-    [[ $# -eq 2 ]] || { usage; exit 2; }
-    if [[ -z "$BUILDER_CONTAINER" ]]; then
-      if [[ "$2" == /* ]]; then
-        SOURCE_CANDIDATE=$2
-      else
-        SOURCE_CANDIDATE="$BUILD_LOCAL_ROOT/$2"
-      fi
-      [[ -d "$SOURCE_CANDIDATE" ]] || {
-        echo "Error: Local source directory not found: $SOURCE_CANDIDATE"
-        exit 2
-      }
-      if ! LOCAL_SOURCE=$(realpath -- "$SOURCE_CANDIDATE"); then
-        echo "Error: Cannot canonicalize local source: $SOURCE_CANDIDATE"
-        exit 2
-      fi
-      if [[ "$BUILD_LOCAL_ROOT" != "/" && "$LOCAL_SOURCE" != "$BUILD_LOCAL_ROOT" && "$LOCAL_SOURCE" != "$BUILD_LOCAL_ROOT/"* ]]; then
-        echo "Error: Local source must stay under BUILD_LOCAL: $LOCAL_SOURCE"
-        exit 2
-      fi
+dispatch_build() {
+  if [[ -z "$BUILDER_CONTAINER" ]]; then
+    if [[ "$MODE" == "--local" ]]; then
+      run_in_container --local "$LOCAL_SOURCE"
     else
-      [[ "$2" == /* ]] || { echo "Error: Local source path must be absolute: $2"; exit 2; }
-      [[ -d "$2" ]] || { echo "Error: Local source directory not found: $2"; exit 2; }
-      LOCAL_SOURCE=$2
+      run_in_container "$@"
     fi
-    ;;
-  --remote)
-    [[ $# -ge 3 && $# -le 4 ]] || { usage; exit 2; }
-    REPO=$2
-    BRANCH=$3
-    COMMIT=${4:-}
-    ;;
-  *)
-    usage
-    exit 2
-    ;;
-esac
-if [[ -z "$BUILDER_CONTAINER" ]]; then
-  if [[ "$MODE" == "--local" ]]; then
-    run_in_container --local "$LOCAL_SOURCE"
-  else
-    run_in_container "$@"
+    return $?
   fi
-  exit $?
-fi
 
-if [[ -f "$BUILD_LOCKFILE" ]]; then
+  run_container_build
+}
+
+acquire_build_lock() {
+  if [[ -f "$BUILD_LOCKFILE" ]]; then
     OLD_PID=$(cat "$BUILD_LOCKFILE")
     if ps -p "$OLD_PID" > /dev/null 2>&1; then
-        echo "Error: Build already in progress (PID: $OLD_PID). Exiting."
-        exit 1
+      echo "Error: Build already in progress (PID: $OLD_PID). Exiting."
+      exit 1
     else
-        echo "Warning: Removing stale lock file from PID $OLD_PID"
-        rm -f "$BUILD_LOCKFILE"
+      echo "Warning: Removing stale lock file from PID $OLD_PID"
+      rm -f "$BUILD_LOCKFILE"
     fi
-fi
-echo $$ > "$BUILD_LOCKFILE"
-LOCK_ACQUIRED=1
-START=$(date +%s)
+  fi
+  echo $$ > "$BUILD_LOCKFILE"
+  LOCK_ACQUIRED=1
+  START=$(date +%s)
+}
 
-if [[ "$BUILD_JAHITAN_PATH" != /* ]]; then
+prepare_output_directory() {
+  if [[ "$BUILD_JAHITAN_PATH" != /* ]]; then
     FAILURE_REASON="Error: BUILD_JAHITAN_PATH must be an absolute path: $BUILD_JAHITAN_PATH"
     exit 1
-fi
-if ! mkdir -p "$BUILD_JAHITAN_PATH"; then
+  fi
+  if ! mkdir -p "$BUILD_JAHITAN_PATH"; then
     FAILURE_REASON="Error: Cannot create BUILD_JAHITAN_PATH: $BUILD_JAHITAN_PATH"
     exit 1
-fi
+  fi
 
-TODAY=$(date '+%Y%m%d')
-TODAY_COUNT=$(find "$BUILD_JAHITAN_PATH" -mindepth 1 -maxdepth 1 -type d -name "$TODAY-*" | wc -l)
-TODAY_COUNT=$((TODAY_COUNT + 1))
-TARGET_DIR="$BUILD_JAHITAN_PATH/$TODAY-$TODAY_COUNT"
-if ! mkdir -p "$TARGET_DIR"; then
+  TODAY=$(date '+%Y%m%d')
+  TODAY_COUNT=$(find "$BUILD_JAHITAN_PATH" -mindepth 1 -maxdepth 1 -type d -name "$TODAY-*" | wc -l)
+  TODAY_COUNT=$((TODAY_COUNT + 1))
+  TARGET_DIR="$BUILD_JAHITAN_PATH/$TODAY-$TODAY_COUNT"
+  if ! mkdir -p "$TARGET_DIR"; then
     FAILURE_REASON="Error: Cannot create build output directory: $TARGET_DIR"
     exit 1
-fi
+  fi
+}
 
-if [[ "$MODE" == "--local" ]]; then
+set_repository_name() {
+  if [[ "$MODE" == "--local" ]]; then
     REPO_NAME="local:$LOCAL_SOURCE"
     BRANCH="local"
-else
+  else
     REPO_NAME=$(echo "$REPO" | sed -E 's|.*github.com[:/]([^/]+/[^/.]+)(\.git)?|\1|')
-fi
+  fi
+}
 
-# Optional
-ARCH=amd64
+clean_build_workspace() {
+  ARCH=amd64
+  sudo umount "$(mount | grep live-build | cut -d ' ' -f 3)" || true
+  sudo rm -rf ./chroot ./local ./cache ./tmp || true
+}
 
-sudo umount "$(mount | grep live-build | cut -d ' ' -f 3)" || true
-
-sudo rm -rf ./chroot ./local ./cache ./tmp || true
-
-if [[ "$MODE" == "--local" ]]; then
+build_local_image() {
   prepare_build_tree "$LOCAL_SOURCE" || exit 1
   cd .build || exit 1
   sudo lb clean || exit 1
@@ -331,27 +333,33 @@ if [[ "$MODE" == "--local" ]]; then
     FAILURE_REASON="Error: Local live-build failed"
     exit 1
   fi
-else
+}
+
+prepare_remote_source() {
   echo "Processing $REPO $BRANCH $COMMIT ..."
   sudo mkdir -p tmp || true
   sudo chmod -R a+rw tmp
 
   if ! git clone -b "$BRANCH" "$REPO" "./tmp/$TODAY-$TODAY_COUNT" 2>&1; then
-      FAILURE_REASON="Error: Failed to clone $REPO branch $BRANCH"
-      exit 1
+    FAILURE_REASON="Error: Failed to clone $REPO branch $BRANCH"
+    exit 1
   fi
   if [[ ! -d "./tmp/$TODAY-$TODAY_COUNT/.git" ]]; then
-      FAILURE_REASON="Error: Clone directory is missing or incomplete"
-      exit 1
+    FAILURE_REASON="Error: Clone directory is missing or incomplete"
+    exit 1
   fi
   if [[ -n "$COMMIT" ]] && ! git -C "./tmp/$TODAY-$TODAY_COUNT" checkout "$COMMIT"; then
-      FAILURE_REASON="Error: Failed to checkout commit $COMMIT"
-      exit 1
+    FAILURE_REASON="Error: Failed to checkout commit $COMMIT"
+    exit 1
   fi
 
   COMMIT=$(git -C "./tmp/$TODAY-$TODAY_COUNT" rev-parse --short HEAD)
   CLEAN_REPO_URL=$(echo "$REPO" | sed 's/\.git$//')
   COMMIT_URL="$CLEAN_REPO_URL/commit/$COMMIT"
+}
+
+build_remote_image() {
+  prepare_remote_source
   prepare_build_tree "./tmp/$TODAY-$TODAY_COUNT" || exit 1
   cd .build || exit 1
   sudo sed -i 's/BUILD_NUMBER/'"$TODAY-$TODAY_COUNT"'/g' config/bootloaders/syslinux_common/splash.svg
@@ -360,17 +368,42 @@ else
   apply_archive_config || exit 1
   sudo rm -f "$IMAGE_NAME.build.log"
   if ! sudo lb build 2>&1 | tee "$IMAGE_NAME.build.log"; then
-      FAILURE_REASON="Error: Remote live-build failed"
-      exit 1
+    FAILURE_REASON="Error: Remote live-build failed"
+    exit 1
   fi
-fi
+}
 
-if ! tail -n 10 "$IMAGE_NAME.build.log" | grep -q "P: Build completed successfully"; then
+build_image() {
+  if [[ "$MODE" == "--local" ]]; then
+    build_local_image
+  else
+    build_remote_image
+  fi
+
+  if ! tail -n 10 "$IMAGE_NAME.build.log" | grep -q "P: Build completed successfully"; then
     FAILURE_REASON="Error: Build did not complete successfully"
     exit 1
-fi
+  fi
 
-RESULT="telah terbit ✅"
-ACTION="Berkas citra dapat diunduh"
-publish_artifacts || exit 1
-exit 0
+  RESULT="telah terbit ✅"
+  ACTION="Berkas citra dapat diunduh"
+  publish_artifacts || exit 1
+}
+
+run_container_build() {
+  acquire_build_lock
+  prepare_output_directory
+  set_repository_name
+  clean_build_workspace
+  build_image
+}
+
+main() {
+  validate_required_environment || exit 1
+  initialize_runtime_state
+  parse_arguments "$@"
+  dispatch_build "$@"
+}
+
+main "$@"
+exit $?

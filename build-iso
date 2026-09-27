@@ -21,42 +21,6 @@ validate_required_environment() {
   fi
 }
 
-ARCHIVE_CONF="config/includes.chroot/etc/blankon/archive.conf"
-apply_archive_config() {
-  local conf="config/bootstrap"
-
-  if [[ ! -r "$ARCHIVE_CONF" ]]; then
-    echo "Error: $ARCHIVE_CONF is missing. Cannot determine which archive to build from."
-    return 1
-  fi
-
-  source "$ARCHIVE_CONF"
-
-  if [[ -z "$ARCHIVE_URI" ]]; then
-    echo "Error: $ARCHIVE_CONF did not define ARCHIVE_URI."
-    return 1
-  fi
-
-  if [[ ! -f "$conf" ]]; then
-    echo "Error: $conf is missing; cannot apply the archive configuration."
-    return 1
-  fi
-
-  sudo sed -i -E \
-    "s#^(LB_(PARENT_)?MIRROR_[A-Z_]+=)\".*\"#\\1\"${ARCHIVE_URI}\"#" \
-    "$conf"
-
-  local applied
-  applied=$(grep -cE "^LB_(PARENT_)?MIRROR_[A-Z_]+=\"${ARCHIVE_URI}\"" "$conf")
-
-  if [[ "$applied" -eq 0 ]]; then
-    echo "Error: no mirror entries in $conf were set to $ARCHIVE_URI."
-    return 1
-  fi
-
-  echo "Pointed $applied mirror entries in $conf at $ARCHIVE_URI"
-}
-
 prepare_build_tree() {
   local source_dir="$1"
   local variant
@@ -328,7 +292,6 @@ build_local_image() {
   cd .build || exit 1
   sudo lb clean || exit 1
   sudo lb config --architectures "$ARCH" || exit 1
-  apply_archive_config || exit 1
   if ! sudo lb build --debug | sudo tee -a "$IMAGE_NAME.build.log"; then
     FAILURE_REASON="Error: Local live-build failed"
     exit 1
@@ -365,7 +328,6 @@ build_remote_image() {
   sudo sed -i 's/BUILD_NUMBER/'"$TODAY-$TODAY_COUNT"'/g' config/bootloaders/syslinux_common/splash.svg
   sudo lb clean --purge || exit 1
   sudo lb config --architectures "$ARCH" || exit 1
-  apply_archive_config || exit 1
   sudo rm -f "$IMAGE_NAME.build.log"
   if ! sudo lb build 2>&1 | tee "$IMAGE_NAME.build.log"; then
     FAILURE_REASON="Error: Remote live-build failed"

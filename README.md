@@ -61,6 +61,8 @@ Edit every required value in `.env`:
   output. It is mounted into the container at the same path.
 - `BUILD_LOCAL`: absolute, existing, readable **host** directory containing
   local source checkouts. It is mounted into the container at the same path.
+- `BUILD_SEND_TELEGRAM`: optional; set to `0` to suppress build notifications,
+  for example in CI. Notifications are enabled by default.
 
 `.env` contains a secret and is ignored by Git. Keep it untracked; never paste
 its contents into logs or issues.
@@ -120,15 +122,19 @@ docker compose --env-file .env build
 These commands validate Compose interpolation and build the Docker image only;
 they do not build an ISO or contact Telegram.
 
-CI has separate Build ISO, Cache, and Purge ISO workflows. Their smoke tests
-use temporary directories with fake `lb`, `zsyncmake`, and `curl` commands, so
-they do not download packages or contact Telegram. Build ISO checks local and
-remote sources, publishing failures, input validation, and build locks. Cache
+CI has separate Build ISO, Cache, and Purge ISO workflows on pushes and pull
+requests. Build ISO runs its focused failure-path checks, then builds real
+GNOME ISOs in local and remote mode from the
+`blankon-live-build` `variant-gnome` branch. It checks that each ISO, checksum,
+zsync metadata, and `current` output were published. The ISO files stay on the
+temporary runner and are not uploaded as Actions artifacts. CI suppresses
+Telegram notifications. The CI builder image uses a temporary Dockerfile to
+select the Sinambung archive because the published base image still points at
+the retired Verbeek archive; the repository's Dockerfile is unchanged. Cache
 checks saving, reuse, `archive.conf` key changes, and the shared build/purge
-lock. Purge ISO checks cache removal, symlinks, and mount refusal. Build ISO
-also validates Compose, builds the Docker image, and starts it once to confirm
-the required tools are available. Publication stages a new `current` before
-replacing it; failed staging leaves the previous output available.
+lock. Purge ISO checks cache removal, symlinks, and mount refusal. Publication
+stages a new `current` before replacing it; failed staging leaves the previous
+output available.
 
 ## Troubleshooting
 

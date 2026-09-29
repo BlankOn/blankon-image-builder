@@ -7,12 +7,23 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: build-iso-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-iso:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [local, remote]
+    name: Build ISO (${{ matrix.mode }})
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Check shell scripts
         run: |
@@ -22,31 +33,99 @@ jobs:
           done
           test -x build-iso
 
-      - name: Exercise build without creating an ISO
+      - name: Exercise failure and publication paths
         run: bash tests/build-iso.sh
 
-      - name: Prepare Compose environment
+      - name: Free disk space for the GNOME image
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/share/boost /opt/hostedtoolcache
+          docker image prune --all --force
+          df -h /
+
+      - name: Check out variant-gnome source
         run: |
           set -euo pipefail
+          source_root="$RUNNER_TEMP/blankon-ci-sources"
+          mkdir -p "$source_root"
+          git clone --depth 1 --branch variant-gnome \
+            https://github.com/BlankOn/blankon-live-build.git \
+            "$source_root/blankon-live-build"
+          test "$(cat "$source_root/blankon-live-build/variant")" = gnome
+          test -d "$source_root/blankon-live-build/config/common"
+          test -d "$source_root/blankon-live-build/config/gnome"
+          test -d "$source_root/blankon-live-build/auto"
+          printf 'LIVE_BUILD_SHA=%s\n' \
+            "$(git -C "$source_root/blankon-live-build" rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Prepare CI builder image and Compose environment
+        run: |
+          set -euo pipefail
+          test "$(head -n 1 Dockerfile)" = 'FROM ghcr.io/blankon/blankon-nightly:latest'
+          {
+            head -n 1 Dockerfile
+            cat <<'DOCKERFILE'
+          RUN printf '%s\n' 'deb http://arsip-dev.blankonlinux.id/sinambung sinambung main restricted extras restricted-firmware' > /etc/apt/sources.list \
+              && rm -f /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources
+          DOCKERFILE
+            tail -n +2 Dockerfile
+          } > .github/Dockerfile.ci
+          cat > .github/compose.ci.yml <<'COMPOSE'
+          services:
+            builder:
+              build:
+                context: .
+                dockerfile: .github/Dockerfile.ci
+          COMPOSE
           umask 077
-          mkdir -p workdir "$RUNNER_TEMP/blankon-jahitan"
+          mkdir -p workdir "$RUNNER_TEMP/blankon-ci-jahitan"
           {
             printf 'TELEGRAM_BOT_KEY=%s\n' 'ci-unused-token'
-            printf 'BUILD_LOCAL=%s\n' "$GITHUB_WORKSPACE"
-            printf 'BUILD_LOCKFILE=%s\n' "$RUNNER_TEMP/blankon-build.lock"
-            printf 'BUILD_JAHITAN_PATH=%s\n' "$RUNNER_TEMP/blankon-jahitan"
+            printf 'BUILD_SEND_TELEGRAM=0\n'
+            printf 'BUILD_LOCAL=%s\n' "$RUNNER_TEMP/blankon-ci-sources"
+            printf 'BUILD_LOCKFILE=%s\n' "$RUNNER_TEMP/blankon-ci-sources/.build.lock"
+            printf 'BUILD_JAHITAN_PATH=%s\n' "$RUNNER_TEMP/blankon-ci-jahitan"
             printf 'BUILD_PUBLISH_URL=%s\n' 'https://example.invalid/iso'
           } > .env
           printf 'HOST_UID=%s\n' "$(id -u)" >> "$GITHUB_ENV"
           printf 'HOST_GID=%s\n' "$(id -g)" >> "$GITHUB_ENV"
+          printf 'COMPOSE_FILE=%s:%s\n' \
+            "$GITHUB_WORKSPACE/compose.yml" "$GITHUB_WORKSPACE/.github/compose.ci.yml" >> "$GITHUB_ENV"
 
       - name: Validate Compose configuration
         run: docker compose --project-directory "$GITHUB_WORKSPACE" --env-file .env config --quiet
 
-      - name: Build Docker image
+      - name: Build CI builder image
         run: docker compose --project-directory "$GITHUB_WORKSPACE" --env-file .env build
 
-      - name: Check builder container runtime
+      - name: Check builder tools
         run: |
           docker compose --project-directory "$GITHUB_WORKSPACE" --env-file .env run --rm --no-deps builder \
             sh -ec 'for tool in lb debootstrap zsyncmake flock findmnt; do command -v "$tool"; done'
+
+      - name: Build real ${{ matrix.mode }} GNOME ISO
+        run: |
+          set -euo pipefail
+          if [[ '${{ matrix.mode }}' == local ]]; then
+            ./build-iso --local blankon-live-build
+          else
+            ./build-iso --remote \
+              https://github.com/BlankOn/blankon-live-build.git \
+              variant-gnome "$LIVE_BUILD_SHA"
+          fi
+
+      - name: Verify published ISO
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          isos=("$RUNNER_TEMP"/blankon-ci-jahitan/[0-9]*-[0-9]*/*.hybrid.iso)
+          test "${#isos[@]}" -eq 1
+          iso="${isos[0]}"
+          test -s "$iso"
+          test -s "$iso.zsync"
+          test -s "$iso.sha256sum"
+          (cd "$(dirname "$iso")" && sha256sum -c "$(basename "$iso.sha256sum")")
+          current="$RUNNER_TEMP/blankon-ci-jahitan/current"
+          test -s "$current/$(basename "$iso")"
+          test -s "$current/current.txt"
+          df -h /

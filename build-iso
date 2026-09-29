@@ -65,7 +65,7 @@ cleanup() {
     if [[ "$LOCK_ACQUIRED" == 1 ]]; then
         rm -f "$BUILD_LOCKFILE"
     fi
-    if [[ -n "$BRANCH" ]] && [[ -n "$TODAY" ]]; then
+    if [[ "${BUILD_SEND_TELEGRAM:-1}" != 0 && -n "$BRANCH" && -n "$TODAY" ]]; then
         if [[ -n "$COMMIT_URL" ]]; then
             send_telegram "💿 Jahitan harian $TODAY-$TODAY_COUNT [[ revisi <a href=\\\"$COMMIT_URL\\\">$COMMIT</a> ]] dari $REPO_NAME cabang $BRANCH $RESULT. $FAILURE_REASON $ACTION di ${BUILD_PUBLISH_URL}/$TODAY-$TODAY_COUNT/"
         else

@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+
+if [[ -z "${BUILDER_CONTAINER:-}" ]]; then
+  [[ ! -f "$SCRIPT_DIR/.env" ]] || source "$SCRIPT_DIR/.env"
+  [[ -f "$SCRIPT_DIR/.env" ]] || { echo "Error: Environment file not found: $SCRIPT_DIR/.env" >&2; exit 1; }
+  command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 || { echo "Error: Docker Compose is required" >&2; exit 1; }
+  BUILD_LOCAL="${BUILD_LOCAL:?BUILD_LOCAL is required}"
+  [[ "$BUILD_LOCAL" == /* && -d "$BUILD_LOCAL" && ! -L "$BUILD_LOCAL" ]] || { echo "Error: BUILD_LOCAL must be a safe absolute directory" >&2; exit 1; }
+  BUILD_LOCAL=$(realpath -- "$BUILD_LOCAL")
+  exec {LOCK_FD}>"$SCRIPT_DIR/workdir/.package-cache.lock"
+  flock -n "$LOCK_FD" || { echo "Error: Package cache is in use by another build or purge" >&2; exit 1; }
+  host_uid=$(id -u)
+  host_gid=$(id -g)
+  HOST_UID="$host_uid" HOST_GID="$host_gid" BUILD_LOCAL="$BUILD_LOCAL" PACKAGE_CACHE_LOCK_HELD=1 docker compose --project-directory "$SCRIPT_DIR" --env-file "$SCRIPT_DIR/.env" run --build --rm -e PACKAGE_CACHE_LOCK_HELD=1 builder /builder/purge-iso
+  exit $?
+fi
+
+if [[ "${PACKAGE_CACHE_LOCK_HELD:-}" != 1 ]]; then
+  exec {LOCK_FD}>"$PWD/.package-cache.lock"
+  flock -n "$LOCK_FD" || { echo "Error: Package cache is in use by another build or purge" >&2; exit 1; }
+fi
+cache="$PWD/package-cache"
+[[ ! -L "$cache" && ( ! -e "$cache" || -d "$cache" ) ]] || { echo "Error: Unsafe package-cache path: $cache" >&2; exit 1; }
+if [[ -e "$cache" ]]; then
+  real_cache=$(realpath -- "$cache")
+  [[ "$real_cache" == "$PWD/package-cache" && "$real_cache" != / ]] || { echo "Error: Unsafe package-cache location" >&2; exit 1; }
+  paths=$(find -P "$cache" -mindepth 1 -print) || { echo "Error: Cannot inspect package cache" >&2; exit 1; }
+  mounts=$(findmnt --raw --noheadings --output TARGET) || { echo "Error: Cannot inspect mounts" >&2; exit 1; }
+  while IFS= read -r path; do
+    [[ ! -L "$path" ]] || { echo "Error: Symlink in package cache: $path" >&2; exit 1; }
+  done <<< "$paths"
+  while IFS= read -r target; do
+    printf -v target '%b' "$target"
+    [[ "$target" != "$real_cache" && "$target" != "$real_cache/"* ]] || { echo "Error: Mount beneath package cache: $target" >&2; exit 1; }
+  done <<< "$mounts"
+  rm -rf -- "$real_cache"
+fi

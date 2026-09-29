@@ -100,6 +100,13 @@ remote builds send their configured Telegram notification.
 - Generated build state is ignored by Git. Preserve `workdir` and the output
   directory when you need logs or artifacts after a run.
 
+Downloaded `.deb` files are reused from `workdir/package-cache` across builds
+with the same architecture and `archive.conf` (including different variants).
+The chroot and bootstrap filesystem still start fresh. To discard only the
+download cache, run `./purge-iso` while no build is running; it leaves
+`workdir/.build` and Jahitan outputs intact. A cache purge refuses nested mounts
+and unsafe paths.
+
 ## Validate without building an ISO
 
 Use the same environment file as `build-iso`:

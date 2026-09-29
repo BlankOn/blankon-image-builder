@@ -3,10 +3,6 @@ set -o pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 
-if [[ -f "$SCRIPT_DIR/.env" ]]; then
-  source "$SCRIPT_DIR/.env"
-fi
-
 validate_required_environment() {
   MISSING_VARS=""
   [[ -z "$TELEGRAM_BOT_KEY" ]] && MISSING_VARS="$MISSING_VARS TELEGRAM_BOT_KEY"
@@ -56,6 +52,10 @@ cleanup() {
     local exit_status=$?
 
     [[ -n "$BUILDER_CONTAINER" ]] || return "$exit_status"
+    save_package_cache || {
+        echo "Error: Failed to save package cache" >&2
+        (( exit_status != 0 )) || exit_status=1
+    }
     finalize_build
     handoff_output_ownership || {
         echo "Error: Failed to hand off output ownership" >&2
@@ -72,6 +72,101 @@ cleanup() {
         fi
     fi
     return "$exit_status"
+}
+
+package_cache_key() {
+    local archive="$WORKSPACE_DIR/.build/config/includes.chroot/etc/blankon/archive.conf"
+    [[ -f "$archive" && ! -L "$archive" ]] || return 1
+    printf '%s\n' "$ARCH" "$(sha256sum -- "$archive")" | sha256sum | cut -d ' ' -f 1
+}
+
+acquire_package_cache_lock() {
+    exec {PACKAGE_CACHE_LOCK_FD}>"$WORKSPACE_DIR/.package-cache.lock" || return 1
+    flock -n "$PACKAGE_CACHE_LOCK_FD" || {
+        echo "Error: Package cache is in use by another build or purge" >&2
+        return 1
+    }
+}
+
+has_mount_beneath() {
+    local path="$1" mount mounts
+    mounts=$(findmnt --raw --noheadings --output TARGET) || return 2
+    while IFS= read -r mount; do
+        printf -v mount '%b' "$mount"
+        [[ "$mount" == "$path" || "$mount" == "$path/"* ]] && return 0
+    done <<< "$mounts"
+    return 1
+}
+
+copy_package_debs() {
+    local source="$1" destination="$2"
+    mkdir -p "$destination" || return 1
+    (cd "$source" && find . -type f -name '*.deb' -exec cp --parents --target-directory="$destination" -- {} +)
+}
+
+safe_package_cache() {
+    local root="$WORKSPACE_DIR/package-cache" path stage mount_status
+    [[ ! -L "$root" && ( ! -e "$root" || -d "$root" ) ]] || return 1
+    if [[ -e "$root" ]]; then
+        [[ "$(realpath -- "$root")" == "$root" ]] || return 1
+        for path in "$root"/*; do
+            [[ -e "$path" ]] || continue
+            [[ -d "$path" && ! -L "$path" ]] || return 1
+            for stage in "$path"/*; do
+                [[ -e "$stage" ]] || continue
+                [[ ! -L "$stage" ]] || return 1
+            done
+        done
+    fi
+    if has_mount_beneath "$root"; then mount_status=0; else mount_status=$?; fi
+    (( mount_status == 1 )) || return 1
+    return 0
+}
+
+restore_package_cache() {
+    local key="$1" stage mount_status
+    safe_package_cache || {
+        echo "Error: Unsafe package-cache path" >&2
+        return 1
+    }
+    [[ ! -L "$WORKSPACE_DIR/.build/cache" ]] || return 1
+    for stage in bootstrap chroot binary; do
+        if [[ -d "$WORKSPACE_DIR/package-cache/$key/packages.$stage" && ! -L "$WORKSPACE_DIR/package-cache/$key/packages.$stage" ]]; then
+            if has_mount_beneath "$WORKSPACE_DIR/package-cache/$key/packages.$stage"; then mount_status=0; else mount_status=$?; fi
+            (( mount_status == 1 )) || return 1
+            if has_mount_beneath "$WORKSPACE_DIR/.build/cache"; then mount_status=0; else mount_status=$?; fi
+            (( mount_status == 1 )) || return 1
+        fi
+    done
+    mkdir -p "$WORKSPACE_DIR/package-cache/$key"
+    for stage in bootstrap chroot binary; do
+        if [[ -d "$WORKSPACE_DIR/package-cache/$key/packages.$stage" && ! -L "$WORKSPACE_DIR/package-cache/$key/packages.$stage" ]]; then
+            mkdir -p "$WORKSPACE_DIR/.build/cache"
+            copy_package_debs "$WORKSPACE_DIR/package-cache/$key/packages.$stage" "$WORKSPACE_DIR/.build/cache/packages.$stage" || return 1
+        fi
+    done
+}
+
+save_package_cache() {
+    local key stage mount_status
+    [[ -d "$WORKSPACE_DIR/.build/config" && -d "$WORKSPACE_DIR/.build/auto" ]] || return 0
+    key=$(package_cache_key) || return 1
+    safe_package_cache || return 1
+    [[ ! -L "$WORKSPACE_DIR/.build/cache" ]] || return 1
+    if has_mount_beneath "$WORKSPACE_DIR/.build/cache"; then mount_status=0; else mount_status=$?; fi
+    (( mount_status == 1 )) || return 1
+    for stage in bootstrap chroot binary; do
+        if [[ -d "$WORKSPACE_DIR/.build/cache/packages.$stage" && ! -L "$WORKSPACE_DIR/.build/cache/packages.$stage" ]]; then
+            if has_mount_beneath "$WORKSPACE_DIR/.build/cache/packages.$stage"; then mount_status=0; else mount_status=$?; fi
+            (( mount_status == 1 )) || return 1
+        fi
+    done
+    mkdir -p "$WORKSPACE_DIR/package-cache/$key" || return 1
+    for stage in bootstrap chroot binary; do
+        if [[ -d "$WORKSPACE_DIR/.build/cache/packages.$stage" && ! -L "$WORKSPACE_DIR/.build/cache/packages.$stage" ]]; then
+            copy_package_debs "$WORKSPACE_DIR/.build/cache/packages.$stage" "$WORKSPACE_DIR/package-cache/$key/packages.$stage" || return 1
+        fi
+    done
 }
 
 publish_artifacts() {
@@ -166,7 +261,7 @@ handoff_output_ownership() {
     chown -- "$HOST_UID:$HOST_GID" "$output_root" || status=1
     chown -R -- "$HOST_UID:$HOST_GID" "$output_dir" || status=1
     chown -- "$HOST_UID:$HOST_GID" "$workspace_dir" || status=1
-    for generated_dir in .build chroot local cache tmp; do
+    for generated_dir in .build chroot local cache tmp package-cache; do
         [[ -d "$workspace_dir/$generated_dir" && ! -L "$workspace_dir/$generated_dir" ]] || continue
         chown -R -- "$HOST_UID:$HOST_GID" "$workspace_dir/$generated_dir" || status=1
     done
@@ -278,10 +373,12 @@ run_in_container() {
   local host_uid host_gid
   host_uid=$(id -u) || return 1
   host_gid=$(id -g) || return 1
-  BUILD_LOCAL="$BUILD_LOCAL_ROOT" HOST_UID="$host_uid" HOST_GID="$host_gid" docker compose \
+  exec {PACKAGE_CACHE_LOCK_FD}>"$SCRIPT_DIR/workdir/.package-cache.lock" || return 1
+  flock -n "$PACKAGE_CACHE_LOCK_FD" || { echo "Error: Package cache is in use by another build or purge" >&2; return 1; }
+  BUILD_LOCAL="$BUILD_LOCAL_ROOT" HOST_UID="$host_uid" HOST_GID="$host_gid" PACKAGE_CACHE_LOCK_HELD=1 docker compose \
     --project-directory "$SCRIPT_DIR" \
     --env-file "$SCRIPT_DIR/.env" \
-    run --build --rm builder /builder/build-iso "$@"
+    run --build --rm -e PACKAGE_CACHE_LOCK_HELD=1 builder /builder/build-iso "$@"
 }
 
 dispatch_build() {
@@ -350,8 +447,13 @@ clean_build_workspace() {
 
 build_local_image() {
   prepare_build_tree "$LOCAL_SOURCE" || exit 1
+  local cache_key
   cd .build || exit 1
   sudo lb clean || exit 1
+  cd .. || exit 1
+  cache_key=$(package_cache_key) || exit 1
+  restore_package_cache "$cache_key" || exit 1
+  cd .build || exit 1
   sudo lb config --architectures "$ARCH" || exit 1
   if ! sudo lb build --debug | sudo tee -a "$IMAGE_NAME.build.log"; then
     FAILURE_REASON="Error: Local live-build failed"
@@ -385,9 +487,16 @@ prepare_remote_source() {
 build_remote_image() {
   prepare_remote_source
   prepare_build_tree "./tmp/$TODAY-$TODAY_COUNT" || exit 1
+  local cache_key
   cd .build || exit 1
   sudo sed -i 's/BUILD_NUMBER/'"$TODAY-$TODAY_COUNT"'/g' config/bootloaders/syslinux_common/splash.svg
+  cd .. || exit 1
+  cache_key=$(package_cache_key) || exit 1
+  cd .build || exit 1
   sudo lb clean --purge || exit 1
+  cd .. || exit 1
+  restore_package_cache "$cache_key" || exit 1
+  cd .build || exit 1
   sudo lb config --architectures "$ARCH" || exit 1
   sudo rm -f "$IMAGE_NAME.build.log"
   if ! sudo lb build 2>&1 | tee "$IMAGE_NAME.build.log"; then
@@ -415,6 +524,9 @@ build_image() {
 
 run_container_build() {
   WORKSPACE_DIR=$(pwd -P) || exit 1
+  if [[ "${PACKAGE_CACHE_LOCK_HELD:-}" != 1 ]]; then
+    acquire_package_cache_lock || exit 1
+  fi
   acquire_build_lock
   prepare_output_directory
   set_repository_name
@@ -429,5 +541,8 @@ main() {
   dispatch_build "$@"
 }
 
-main "$@"
-exit $?
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  [[ ! -f "$SCRIPT_DIR/.env" ]] || source "$SCRIPT_DIR/.env"
+  main "$@"
+  exit $?
+fi

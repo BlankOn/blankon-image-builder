@@ -1,0 +1,26 @@
+name: Purge ISO
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check shell scripts
+        run: |
+          set -euo pipefail
+          for script in purge-iso tests/lib.sh tests/purge.sh; do
+            bash -n "$script"
+          done
+          test -x purge-iso
+
+      - name: Exercise cache purge and unsafe-path refusal
+        run: bash tests/purge.sh

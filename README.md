@@ -120,6 +120,16 @@ docker compose --env-file .env build
 These commands validate Compose interpolation and build the Docker image only;
 they do not build an ISO or contact Telegram.
 
+CI has separate Build ISO, Cache, and Purge ISO workflows. Their smoke tests
+use temporary directories with fake `lb`, `zsyncmake`, and `curl` commands, so
+they do not download packages or contact Telegram. Build ISO checks local and
+remote sources, publishing failures, input validation, and build locks. Cache
+checks saving, reuse, `archive.conf` key changes, and the shared build/purge
+lock. Purge ISO checks cache removal, symlinks, and mount refusal. Build ISO
+also validates Compose, builds the Docker image, and starts it once to confirm
+the required tools are available. Publication stages a new `current` before
+replacing it; failed staging leaves the previous output available.
+
 ## Troubleshooting
 
 - **Missing `BUILD_LOCAL`**: copy `.env.example` to `.env`, set an absolute

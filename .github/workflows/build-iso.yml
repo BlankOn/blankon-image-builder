@@ -1,0 +1,52 @@
+name: Build ISO
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-iso:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check shell scripts
+        run: |
+          set -euo pipefail
+          for script in build-iso tests/lib.sh tests/build-iso.sh; do
+            bash -n "$script"
+          done
+          test -x build-iso
+
+      - name: Exercise build without creating an ISO
+        run: bash tests/build-iso.sh
+
+      - name: Prepare Compose environment
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p workdir "$RUNNER_TEMP/blankon-jahitan"
+          {
+            printf 'TELEGRAM_BOT_KEY=%s\n' 'ci-unused-token'
+            printf 'BUILD_LOCAL=%s\n' "$GITHUB_WORKSPACE"
+            printf 'BUILD_LOCKFILE=%s\n' "$RUNNER_TEMP/blankon-build.lock"
+            printf 'BUILD_JAHITAN_PATH=%s\n' "$RUNNER_TEMP/blankon-jahitan"
+            printf 'BUILD_PUBLISH_URL=%s\n' 'https://example.invalid/iso'
+          } > .env
+          printf 'HOST_UID=%s\n' "$(id -u)" >> "$GITHUB_ENV"
+          printf 'HOST_GID=%s\n' "$(id -g)" >> "$GITHUB_ENV"
+
+      - name: Validate Compose configuration
+        run: docker compose --project-directory "$GITHUB_WORKSPACE" --env-file .env config --quiet
+
+      - name: Build Docker image
+        run: docker compose --project-directory "$GITHUB_WORKSPACE" --env-file .env build
+
+      - name: Check builder container runtime
+        run: |
+          docker compose --project-directory "$GITHUB_WORKSPACE" --env-file .env run --rm --no-deps builder \
+            sh -ec 'for tool in lb debootstrap zsyncmake flock findmnt; do command -v "$tool"; done'

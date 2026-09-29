@@ -52,6 +52,7 @@ cleanup() {
     local exit_status=$?
 
     [[ -n "$BUILDER_CONTAINER" ]] || return "$exit_status"
+    [[ -n "${START:-}" ]] || return "$exit_status"
     save_package_cache || {
         echo "Error: Failed to save package cache" >&2
         (( exit_status != 0 )) || exit_status=1
@@ -169,6 +170,50 @@ save_package_cache() {
     done
 }
 
+update_current_output() {
+    local current="$BUILD_JAHITAN_PATH/current" staged backup had_previous=0 mount_status
+
+    if has_mount_beneath "$current"; then mount_status=0; else mount_status=$?; fi
+    (( mount_status == 1 )) || {
+        echo "Error: Mount beneath current Jahitan output" >&2
+        return 1
+    }
+
+    staged=$(mktemp -d "$BUILD_JAHITAN_PATH/.current.stage.XXXXXXXX") || return 1
+    if ! sudo cp -vR "$TARGET_DIR/." "$staged/" || \
+       ! printf '%s\n' "$TODAY-$TODAY_COUNT" > "$staged/current.txt" || \
+       ! sudo chmod --reference="$TARGET_DIR" "$staged"; then
+        sudo rm -rf -- "$staged"
+        return 1
+    fi
+
+    backup=$(mktemp -d "$BUILD_JAHITAN_PATH/.current.backup.XXXXXXXX") || {
+        sudo rm -rf -- "$staged"
+        return 1
+    }
+    if [[ -e "$current" || -L "$current" ]]; then
+        if ! sudo mv -- "$current" "$backup/previous"; then
+            sudo rm -rf -- "$staged" "$backup"
+            return 1
+        fi
+        had_previous=1
+    fi
+    if ! sudo mv -- "$staged" "$current"; then
+        if (( had_previous )) && ! sudo mv -- "$backup/previous" "$current"; then
+            echo "Error: Previous current output remains at $backup/previous" >&2
+        else
+            sudo rm -rf -- "$backup"
+        fi
+        sudo rm -rf -- "$staged"
+        return 1
+    fi
+
+    CURRENT_OUTPUT_UPDATED=1
+    if ! sudo rm -rf -- "$backup"; then
+        echo "Warning: Previous current output remains at $backup" >&2
+    fi
+}
+
 publish_artifacts() {
     local suffix
 
@@ -190,14 +235,7 @@ publish_artifacts() {
         RESULT="gagal terbit ❌"
         return 1
     fi
-    if ! sudo rm -rf "$BUILD_JAHITAN_PATH/current"; then
-        FAILURE_REASON="Error: Failed to update current Jahitan artifacts"
-        RESULT="gagal terbit ❌"
-        return 1
-    fi
-    CURRENT_OUTPUT_UPDATED=1
-    if ! sudo cp -vR "$TARGET_DIR" "$BUILD_JAHITAN_PATH/current" || \
-        ! printf '%s\n' "$TODAY-$TODAY_COUNT" > "$BUILD_JAHITAN_PATH/current/current.txt"; then
+    if ! update_current_output; then
         FAILURE_REASON="Error: Failed to update current Jahitan artifacts"
         RESULT="gagal terbit ❌"
         return 1
@@ -285,6 +323,7 @@ initialize_runtime_state() {
   REPO=""
   BRANCH=""
   COMMIT=""
+  START=""
   LOCK_ACQUIRED=0
   CURRENT_OUTPUT_UPDATED=0
 }

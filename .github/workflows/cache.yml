@@ -1,0 +1,27 @@
+name: Cache
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  cache:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check shell scripts
+        run: |
+          set -euo pipefail
+          for script in build-iso purge-iso tests/lib.sh tests/cache.sh; do
+            bash -n "$script"
+          done
+          test -x build-iso
+          test -x purge-iso
+
+      - name: Exercise package cache and shared lock
+        run: bash tests/cache.sh

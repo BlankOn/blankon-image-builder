@@ -3,6 +3,16 @@ name: Build ISO
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: ISO source profile
+        type: choice
+        required: true
+        default: e2e
+        options:
+          - e2e
+          - gnome
 
 permissions:
   contents: read
@@ -19,7 +29,9 @@ jobs:
       fail-fast: false
       matrix:
         mode: [local, remote]
-    name: Build ISO (${{ matrix.mode }})
+    name: Build ISO (${{ matrix.mode }}, ${{ inputs.profile || 'e2e' }})
+    env:
+      ISO_PROFILE: ${{ inputs.profile || 'e2e' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -37,24 +49,44 @@ jobs:
         run: bash tests/build-iso.sh
 
       - name: Free disk space for the GNOME image
+        if: ${{ inputs.profile == 'gnome' }}
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
             /usr/local/share/boost /opt/hostedtoolcache
           docker image prune --all --force
           df -h /
 
-      - name: Check out variant-gnome source
+      - name: Prepare live-build source
         run: |
           set -euo pipefail
           source_root="$RUNNER_TEMP/blankon-ci-sources"
           mkdir -p "$source_root"
-          git clone --depth 1 --branch variant-gnome \
-            https://github.com/BlankOn/blankon-live-build.git \
-            "$source_root/blankon-live-build"
-          test "$(cat "$source_root/blankon-live-build/variant")" = gnome
+          if [[ "$ISO_PROFILE" == gnome ]]; then
+            git clone --depth 1 --branch variant-gnome \
+              https://github.com/BlankOn/blankon-live-build.git \
+              "$source_root/blankon-live-build"
+            source_repo=https://github.com/BlankOn/blankon-live-build.git
+            source_branch=variant-gnome
+            expected_variant=gnome
+          else
+            cp -a tests/e2e/live-build "$source_root/blankon-live-build"
+            git -C "$source_root/blankon-live-build" init -b ci
+            git -C "$source_root/blankon-live-build" add --all
+            git -C "$source_root/blankon-live-build" \
+              -c user.name='BlankOn CI' -c user.email='ci@blankonlinux.id' \
+              commit -qm 'Minimal live-build E2E source'
+            git clone --bare "$source_root/blankon-live-build" "$source_root/remote.git"
+            sudo chown -R root:root "$source_root/remote.git"
+            source_repo="file://$source_root/remote.git"
+            source_branch=ci
+            expected_variant=ci
+          fi
+          test "$(cat "$source_root/blankon-live-build/variant")" = "$expected_variant"
           test -d "$source_root/blankon-live-build/config/common"
-          test -d "$source_root/blankon-live-build/config/gnome"
+          test -d "$source_root/blankon-live-build/config/$expected_variant"
           test -d "$source_root/blankon-live-build/auto"
+          printf 'LIVE_BUILD_REPO=%s\n' "$source_repo" >> "$GITHUB_ENV"
+          printf 'LIVE_BUILD_BRANCH=%s\n' "$source_branch" >> "$GITHUB_ENV"
           printf 'LIVE_BUILD_SHA=%s\n' \
             "$(git -C "$source_root/blankon-live-build" rev-parse HEAD)" >> "$GITHUB_ENV"
 
@@ -103,15 +135,13 @@ jobs:
           docker compose --project-directory "$GITHUB_WORKSPACE" --env-file .env run --rm --no-deps builder \
             sh -ec 'for tool in lb debootstrap zsyncmake flock findmnt; do command -v "$tool"; done'
 
-      - name: Build real ${{ matrix.mode }} GNOME ISO
+      - name: Build real ${{ matrix.mode }} ${{ inputs.profile || 'e2e' }} ISO
         run: |
           set -euo pipefail
           if [[ '${{ matrix.mode }}' == local ]]; then
             ./build-iso --local blankon-live-build
           else
-            ./build-iso --remote \
-              https://github.com/BlankOn/blankon-live-build.git \
-              variant-gnome "$LIVE_BUILD_SHA"
+            ./build-iso --remote "$LIVE_BUILD_REPO" "$LIVE_BUILD_BRANCH" "$LIVE_BUILD_SHA"
           fi
 
       - name: Verify published ISO

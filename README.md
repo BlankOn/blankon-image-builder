@@ -123,18 +123,26 @@ These commands validate Compose interpolation and build the Docker image only;
 they do not build an ISO or contact Telegram.
 
 CI has separate Build ISO, Cache, and Purge ISO workflows on pushes and pull
-requests. Build ISO runs its focused failure-path checks, then builds real
-GNOME ISOs in local and remote mode from the
-`blankon-live-build` `variant-gnome` branch. It checks that each ISO, checksum,
-zsync metadata, and `current` output were published. The ISO files stay on the
-temporary runner and are not uploaded as Actions artifacts. CI suppresses
-Telegram notifications. The CI builder image uses a temporary Dockerfile to
-select the Sinambung archive because the published base image still points at
-the retired Verbeek archive; the repository's Dockerfile is unchanged. Cache
-checks saving, reuse, `archive.conf` key changes, and the shared build/purge
-lock. Purge ISO checks cache removal, symlinks, and mount refusal. Publication
-stages a new `current` before replacing it; failed staging leaves the previous
-output available.
+requests. Build ISO runs its focused failure-path checks, then builds a small,
+real Sinambung ISO in both local and remote mode from
+`tests/e2e/live-build`. That source uses the BlankOn archive and signing key,
+debootstrap, the live kernel and boot components, and the production ISO format.
+It omits the desktop, installer, and firmware package lists and uses faster
+compression. The remote job commits the same fixture into a temporary Git
+repository and exercises the clone, branch, and commit path through `--remote`.
+Build ISO checks that each ISO, checksum, zsync file, and `current` output were
+published. The ISOs stay on the temporary runner and are not uploaded as
+Actions artifacts. To build the complete GNOME image in both modes, run the
+Build ISO workflow manually with the `gnome` profile; that profile uses the
+`blankon-live-build` `variant-gnome` branch on GitHub.
+
+CI suppresses Telegram notifications. Its temporary builder image selects the
+Sinambung archive because the published base image still points at the retired
+Verbeek archive; the repository's Dockerfile is unchanged. Cache checks saving,
+reuse, `archive.conf` key changes, and the shared build/purge lock. Purge ISO
+checks cache removal, symlinks, and mount refusal. Publication stages a new
+`current` before replacing it; failed staging leaves the previous output
+available.
 
 ## Troubleshooting
 

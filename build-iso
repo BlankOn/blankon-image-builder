@@ -528,7 +528,9 @@ build_remote_image() {
   prepare_build_tree "./tmp/$TODAY-$TODAY_COUNT" || exit 1
   local cache_key
   cd .build || exit 1
-  sudo sed -i 's/BUILD_NUMBER/'"$TODAY-$TODAY_COUNT"'/g' config/bootloaders/syslinux_common/splash.svg
+  if [[ -f config/bootloaders/syslinux_common/splash.svg ]]; then
+    sudo sed -i 's/BUILD_NUMBER/'"$TODAY-$TODAY_COUNT"'/g' config/bootloaders/syslinux_common/splash.svg || exit 1
+  fi
   cd .. || exit 1
   cache_key=$(package_cache_key) || exit 1
   cd .build || exit 1

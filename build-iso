@@ -57,6 +57,10 @@ cleanup() {
 
     [[ -n "$BUILDER_CONTAINER" ]] || return "$exit_status"
     finalize_build
+    handoff_output_ownership || {
+        echo "Error: Failed to hand off output ownership" >&2
+        (( exit_status != 0 )) || exit_status=1
+    }
     if [[ "$LOCK_ACQUIRED" == 1 ]]; then
         rm -f "$BUILD_LOCKFILE"
     fi
@@ -91,8 +95,13 @@ publish_artifacts() {
         RESULT="gagal terbit ❌"
         return 1
     fi
-    if ! sudo rm -rf "$BUILD_JAHITAN_PATH/current" || \
-        ! sudo cp -vR "$TARGET_DIR" "$BUILD_JAHITAN_PATH/current" || \
+    if ! sudo rm -rf "$BUILD_JAHITAN_PATH/current"; then
+        FAILURE_REASON="Error: Failed to update current Jahitan artifacts"
+        RESULT="gagal terbit ❌"
+        return 1
+    fi
+    CURRENT_OUTPUT_UPDATED=1
+    if ! sudo cp -vR "$TARGET_DIR" "$BUILD_JAHITAN_PATH/current" || \
         ! printf '%s\n' "$TODAY-$TODAY_COUNT" > "$BUILD_JAHITAN_PATH/current/current.txt"; then
         FAILURE_REASON="Error: Failed to update current Jahitan artifacts"
         RESULT="gagal terbit ❌"
@@ -119,6 +128,54 @@ finalize_build() {
     sudo umount "$(mount | grep live-build | cut -d ' ' -f 3)" || true
 }
 
+handoff_output_ownership() {
+    local status=0 output_root output_dir current_dir="" workspace_dir mount_targets mount_target generated_dir
+    [[ "${HOST_UID:-}" =~ ^[0-9]+$ && "${HOST_GID:-}" =~ ^[0-9]+$ ]] || {
+        echo "Error: HOST_UID and HOST_GID must be numeric IDs" >&2
+        return 1
+    }
+    [[ -n "$TARGET_DIR" && -d "$TARGET_DIR" ]] || return 0
+    output_root=$(realpath -- "$BUILD_JAHITAN_PATH") || return 1
+    [[ "$output_root" != / ]] || {
+        echo "Error: Refusing ownership handoff on filesystem root" >&2
+        return 1
+    }
+    output_dir=$(realpath -- "$TARGET_DIR") || return 1
+    [[ "$output_dir" == "$output_root/"* ]] || {
+        echo "Error: Output target escapes BUILD_JAHITAN_PATH" >&2
+        return 1
+    }
+    workspace_dir=$(realpath -- "$WORKSPACE_DIR") || return 1
+    if [[ "$CURRENT_OUTPUT_UPDATED" == 1 && -d "$BUILD_JAHITAN_PATH/current" ]]; then
+        current_dir=$(realpath -- "$BUILD_JAHITAN_PATH/current") || return 1
+        [[ "$current_dir" == "$output_root/"* ]] || {
+            echo "Error: Current output escapes BUILD_JAHITAN_PATH" >&2
+            return 1
+        }
+    fi
+    mount_targets=$(findmnt --raw --noheadings --output TARGET) || return 1
+    while IFS= read -r mount_target; do
+        printf -v mount_target '%b' "$mount_target"
+        if [[ "$mount_target" == "$workspace_dir/"* || \
+              "$mount_target" == "$output_dir" || "$mount_target" == "$output_dir/"* || \
+              ( -n "$current_dir" && ( "$mount_target" == "$current_dir" || "$mount_target" == "$current_dir/"* ) ) ]]; then
+            echo "Error: Mount beneath generated output; skipping ownership handoff: $mount_target" >&2
+            return 1
+        fi
+    done <<< "$mount_targets"
+    chown -- "$HOST_UID:$HOST_GID" "$output_root" || status=1
+    chown -R -- "$HOST_UID:$HOST_GID" "$output_dir" || status=1
+    chown -- "$HOST_UID:$HOST_GID" "$workspace_dir" || status=1
+    for generated_dir in .build chroot local cache tmp; do
+        [[ -d "$workspace_dir/$generated_dir" && ! -L "$workspace_dir/$generated_dir" ]] || continue
+        chown -R -- "$HOST_UID:$HOST_GID" "$workspace_dir/$generated_dir" || status=1
+    done
+    if [[ -n "$current_dir" ]]; then
+        chown -R -- "$HOST_UID:$HOST_GID" "$current_dir" || status=1
+    fi
+    return "$status"
+}
+
 usage() {
   echo "Usage: $0 --local <source-dir>"
   echo "       $0 --remote <repo> <branch> [commit]"
@@ -134,6 +191,7 @@ initialize_runtime_state() {
   BRANCH=""
   COMMIT=""
   LOCK_ACQUIRED=0
+  CURRENT_OUTPUT_UPDATED=0
 }
 
 validate_host_root() {
@@ -217,7 +275,10 @@ run_in_container() {
     exit 1
   }
 
-  BUILD_LOCAL="$BUILD_LOCAL_ROOT" docker compose \
+  local host_uid host_gid
+  host_uid=$(id -u) || return 1
+  host_gid=$(id -g) || return 1
+  BUILD_LOCAL="$BUILD_LOCAL_ROOT" HOST_UID="$host_uid" HOST_GID="$host_gid" docker compose \
     --project-directory "$SCRIPT_DIR" \
     --env-file "$SCRIPT_DIR/.env" \
     run --build --rm builder /builder/build-iso "$@"
@@ -353,6 +414,7 @@ build_image() {
 }
 
 run_container_build() {
+  WORKSPACE_DIR=$(pwd -P) || exit 1
   acquire_build_lock
   prepare_output_directory
   set_repository_name

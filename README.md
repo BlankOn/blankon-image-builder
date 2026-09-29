@@ -20,6 +20,14 @@ The container is intentionally privileged and runs as root because live-build
 needs mounts and root-owned build state. Do not remove that requirement from
 the Compose service.
 
+Run `./build-iso` as the host user that should own generated files. The
+`workdir` directory, its generated build directories, and `BUILD_JAHITAN_PATH`
+itself, plus the new date-stamped output/`current` copy, are handed to that
+user's numeric UID/GID after logs are written, including after failed builds.
+Older date-stamped outputs are not changed.
+Handoff is skipped if a mount exists beneath either target. The builder remains
+root and privileged; root callers consequently retain ownership.
+
 ## Layout and setup
 
 Keep the two repositories as siblings below `BUILD_LOCAL`:
@@ -97,6 +105,7 @@ remote builds send their configured Telegram notification.
 Use the same environment file as `build-iso`:
 
 ```sh
+export HOST_UID=$(id -u) HOST_GID=$(id -g)
 docker compose --env-file .env config --quiet
 docker compose --env-file .env build
 ```

@@ -7,6 +7,8 @@ services:
     env_file: .env
     environment:
       BUILDER_CONTAINER: "1"
+      HOST_UID: ${HOST_UID:?HOST_UID is required}
+      HOST_GID: ${HOST_GID:?HOST_GID is required}
     volumes:
       - ./workdir:/workdir
       - .:/builder:ro

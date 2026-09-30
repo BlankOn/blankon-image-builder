@@ -174,3 +174,30 @@ jobs:
           test -s "$current/$(basename "$iso")"
           test -s "$current/current.txt"
           df -h /
+
+      - name: Verify real package cache restore
+        if: ${{ inputs.profile != 'gnome' }}
+        run: |
+          set -euo pipefail
+          source ./build-iso
+          WORKSPACE_DIR="$GITHUB_WORKSPACE/workdir"
+          ARCH=amd64
+          cache_key=$(package_cache_key)
+          cache_dir="$WORKSPACE_DIR/package-cache/$cache_key"
+          test -d "$cache_dir"
+          saved_count=$(find "$cache_dir" -type f -name '*.deb' | wc -l)
+          test "$saved_count" -gt 0
+
+          restore_root=$(mktemp -d "$RUNNER_TEMP/cache-restore.XXXXXXXX")
+          mv -- "$WORKSPACE_DIR/package-cache" "$restore_root/package-cache"
+          WORKSPACE_DIR="$restore_root"
+          restore_package_cache "$cache_key"
+
+          (cd "$restore_root/package-cache/$cache_key" && \
+            find . -type f -name '*.deb' -print0 | sort -z | xargs -0 -r sha256sum) \
+            > "$restore_root/saved.sha256"
+          (cd "$restore_root/.build/cache" && \
+            find . -type f -name '*.deb' -print0 | sort -z | xargs -0 -r sha256sum) \
+            > "$restore_root/restored.sha256"
+          cmp "$restore_root/saved.sha256" "$restore_root/restored.sha256"
+          echo "Restored $saved_count real package files from the build cache."

@@ -138,11 +138,26 @@ jobs:
       - name: Build real ${{ matrix.mode }} ${{ inputs.profile || 'e2e' }} ISO
         run: |
           set -euo pipefail
-          if [[ '${{ matrix.mode }}' == local ]]; then
-            ./build-iso --local blankon-live-build
-          else
-            ./build-iso --remote "$LIVE_BUILD_REPO" "$LIVE_BUILD_BRANCH" "$LIVE_BUILD_SHA"
-          fi
+          for attempt in 1 2 3; do
+            log="$RUNNER_TEMP/build-iso-attempt-$attempt.log"
+            if [[ '${{ matrix.mode }}' == local ]]; then
+              if ./build-iso --local blankon-live-build 2>&1 | tee "$log"; then
+                break
+              fi
+            else
+              if ./build-iso --remote "$LIVE_BUILD_REPO" "$LIVE_BUILD_BRANCH" "$LIVE_BUILD_SHA" 2>&1 | tee "$log"; then
+                break
+              fi
+            fi
+            tail -n 220 "$log" > "$RUNNER_TEMP/build-iso-error-tail.log"
+            if (( attempt == 3 )) || ! grep -Eqi \
+              'Could not connect to|connection timed out|Temporary failure resolving|Network is unreachable' \
+              "$RUNNER_TEMP/build-iso-error-tail.log"; then
+              exit 1
+            fi
+            echo "::warning::Archive connection failed; retrying ISO build ($attempt/3)"
+            sleep "$((attempt * 30))"
+          done
 
       - name: Verify published ISO
         run: |

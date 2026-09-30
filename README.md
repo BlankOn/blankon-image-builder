@@ -132,9 +132,10 @@ compression. The remote job commits the same fixture into a temporary Git
 repository and exercises the clone, branch, and commit path through `--remote`.
 Build ISO checks that each ISO, checksum, zsync file, and `current` output were
 published. The ISOs stay on the temporary runner and are not uploaded as
-Actions artifacts. To build the complete GNOME image in both modes, run the
-Build ISO workflow manually with the `gnome` profile; that profile uses the
-`blankon-live-build` `variant-gnome` branch on GitHub.
+Actions artifacts. Archive connection timeouts are retried up to twice; other
+build failures fail immediately. To build the complete GNOME image in both
+modes, run the Build ISO workflow manually with the `gnome` profile; that
+profile uses the `blankon-live-build` `variant-gnome` branch on GitHub.
 
 CI suppresses Telegram notifications. Its temporary builder image selects the
 Sinambung archive because the published base image still points at the retired

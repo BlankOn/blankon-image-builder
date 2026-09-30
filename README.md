@@ -138,8 +138,10 @@ modes, run the Build ISO workflow manually with the `gnome` profile; that
 profile uses the `blankon-live-build` `variant-gnome` branch on GitHub.
 After each small E2E ISO, CI also checks that real downloaded `.deb` files were
 saved and that restoring the cache into a fresh workspace preserves their
-SHA-256 hashes. The separate Cache workflow tests cache reuse, invalidation,
-and locking with a fast fixture.
+SHA-256 hashes. It then purges that same runner's real package cache and checks
+that the build configuration and published output remain. The separate Cache
+and Purge ISO workflows test reuse, invalidation, locking, and unsafe paths
+with fast fixtures on their own runners.
 
 CI suppresses Telegram notifications. Its temporary builder image selects the
 Sinambung archive because the published base image still points at the retired

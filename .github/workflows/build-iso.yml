@@ -40,7 +40,7 @@ jobs:
       - name: Check shell scripts
         run: |
           set -euo pipefail
-          for script in build-iso tests/lib.sh tests/build-iso.sh tests/e2e/verify-package-cache.sh; do
+          for script in build-iso purge-iso tests/lib.sh tests/build-iso.sh tests/e2e/verify-package-cache.sh; do
             bash -n "$script"
           done
           test -x build-iso
@@ -181,3 +181,17 @@ jobs:
           set -euo pipefail
           docker compose --project-directory "$GITHUB_WORKSPACE" --env-file .env run --rm --no-deps builder \
             bash /builder/tests/e2e/verify-package-cache.sh
+
+      - name: Purge real package cache
+        if: ${{ inputs.profile != 'gnome' }}
+        run: |
+          set -euo pipefail
+          cache_root="$GITHUB_WORKSPACE/workdir/package-cache"
+          archive_config="$GITHUB_WORKSPACE/workdir/.build/config/includes.chroot/etc/blankon/archive.conf"
+          test -d "$cache_root"
+          test -n "$(find "$cache_root" -type f -name '*.deb' -print -quit)"
+          test -f "$archive_config"
+          ./purge-iso
+          test ! -e "$cache_root"
+          test -f "$archive_config"
+          test -s "$RUNNER_TEMP/blankon-ci-jahitan/current/current.txt"

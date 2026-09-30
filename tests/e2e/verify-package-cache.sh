@@ -19,6 +19,7 @@ saved_count=$(find "$cache_dir" -type f -name '*.deb' | wc -l)
 # Copy the cache with hard links so the restore sees a fresh workspace without
 # duplicating the downloaded packages on the runner's disk.
 restore_root=$(mktemp -d "$WORKSPACE_DIR/.cache-restore.XXXXXXXX")
+trap 'rm -rf -- "$restore_root"' EXIT
 cp -al -- "$WORKSPACE_DIR/package-cache" "$restore_root/package-cache"
 WORKSPACE_DIR="$restore_root"
 restore_package_cache "$cache_key"

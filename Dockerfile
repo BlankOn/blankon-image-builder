@@ -19,7 +19,6 @@ RUN apt-get update \
         curl \
         jq \
         tar \
-        sudo \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 

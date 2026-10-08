@@ -1,9 +1,10 @@
 # BlankOn image-builder
 
 Orchestration for building BlankOn live-build images. `build-iso` validates the
-request, then runs the build through Docker Compose in the privileged, root
-`builder` container. Host directories are mounted at their same absolute paths
-inside the container.
+request, then runs the build through Docker Compose as the host caller's
+numeric UID/GID. The container enters rootless user, PID, and mount namespaces
+for live-build, where the caller is mapped to namespace root. Host directories
+are mounted at their same absolute paths inside the container.
 
 Keep `.env` beside `build-iso`; `build-iso` loads that file from its own
 repository directory.
@@ -11,22 +12,24 @@ repository directory.
 ## Requirements
 
 - Linux host with Docker Engine and the Docker Compose plugin.
-- Permission to use Docker, including privileged containers.
+- Permission to use Docker with a compatible, narrowly scoped runtime policy.
 - Writable host directories for `BUILD_LOCAL`, `BUILD_JAHITAN_PATH`, and the
   repository's `workdir`; Docker must be allowed to mount them.
 - A Telegram bot token for build notifications. Keep it private.
 
-The container is intentionally privileged and runs as root because live-build
-needs mounts and root-owned build state. Do not remove that requirement from
-the Compose service.
+The host kernel must enable unprivileged user namespaces. Standard Docker
+seccomp/runtime policies may block rootless `unshare` and mount operations. The
+operator must configure a compatible, narrowly scoped policy/profile permitting
+the required user, PID, and mount namespaces and live-build syscalls. Do not
+enable privileged mode, use `seccomp=unconfined`, or broadly relax the policy.
 
 Run `./build-iso` as the host user that should own generated files. The
-`workdir` directory, its generated build directories, and `BUILD_JAHITAN_PATH`
-itself, plus the new date-stamped output/`current` copy, are handed to that
-user's numeric UID/GID after logs are written, including after failed builds.
-Older date-stamped outputs are not changed.
-Handoff is skipped if a mount exists beneath either target. The builder remains
-root and privileged; root callers consequently retain ownership.
+`workdir` directory, generated build directories, and outputs are created by
+the host caller's UID/GID and remain user-owned, including after failed builds.
+Older date-stamped outputs are not changed. Rootless UID mapping makes an
+ownership handoff unnecessary when Docker maps the selected container UID/GID
+back to the invoking host caller. Docker user-namespace remapping or rootless
+Docker may need mapping-specific setup; those configurations are not verified.
 
 ## Layout and setup
 
@@ -159,6 +162,11 @@ available.
   or use a relative path such as `blankon-live-build`.
 - **Docker unavailable**: start Docker Engine and verify the Compose plugin with
   `docker compose version`; ensure the user can use Docker.
+- **Rootless build namespace unavailable**: enable unprivileged user namespaces
+  in the host kernel and configure a narrowly scoped Docker seccomp/runtime
+  policy permitting the required user, PID, and mount namespaces and live-build
+  syscalls. Standard policies may block these operations; do not use privileged
+  mode or `seccomp=unconfined`.
 - **Mount or permission errors**: create the configured host directories, make
   them writable for Docker, and check Docker's host-path sharing policy.
 - **Stale lock**: confirm no build is running, then remove the lock in the

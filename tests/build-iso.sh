@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
+bash "$(dirname -- "${BASH_SOURCE[0]}")/namespace-dispatch.sh"
 fixture_init
 
 bash "$scripts_dir/build-iso" --local "$source_dir"
@@ -50,10 +51,10 @@ fi
 
 git -C "$source_dir" init -q -b ci-smoke
 git -C "$source_dir" add .
-git -C "$source_dir" -c user.name=CI -c user.email=ci@example.invalid commit -qm pinned
+git -C "$source_dir" -c commit.gpgsign=false -c user.name=CI -c user.email=ci@example.invalid commit -qm pinned
 pinned_commit=$(git -C "$source_dir" rev-parse HEAD)
 printf 'branch tip\n' > "$source_dir/config/smoke/variant-marker"
-git -C "$source_dir" -c user.name=CI -c user.email=ci@example.invalid commit -qam tip
+git -C "$source_dir" -c commit.gpgsign=false -c user.name=CI -c user.email=ci@example.invalid commit -qam tip
 
 bash "$scripts_dir/build-iso" --remote "$source_dir" ci-smoke "$pinned_commit"
 [[ $(<.build/config/variant-marker) == 'variant fixture' ]]

@@ -26,18 +26,22 @@ fixture_init() {
   printf '<svg>BUILD_NUMBER</svg>\n' > "$source_dir/config/common/bootloaders/syslinux_common/splash.svg"
   printf 'variant fixture\n' > "$source_dir/config/smoke/variant-marker"
 
-  cat > "$test_root/bin/sudo" <<'EOF'
+  cat > "$test_root/bin/cp" <<'EOF'
 #!/usr/bin/env bash
-if [[ "${FAKE_CURRENT_COPY_FAIL:-}" == 1 && "$1" == cp && "$2" == -vR ]]; then
+if [[ "${FAKE_CURRENT_COPY_FAIL:-}" == 1 && "$1" == -vR ]]; then
   echo 'fake current output copy failure' >&2
   exit 43
 fi
-if [[ "${FAKE_CURRENT_PROMOTE_FAIL:-}" == 1 && "$1" == mv && "$2" == -- && \
-      "$3" == "$BUILD_JAHITAN_PATH/.current.stage."* ]]; then
+exec /bin/cp "$@"
+EOF
+  cat > "$test_root/bin/mv" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${FAKE_CURRENT_PROMOTE_FAIL:-}" == 1 && "$1" == -- && \
+      "$2" == "$BUILD_JAHITAN_PATH/.current.stage."* ]]; then
   echo 'fake current output promotion failure' >&2
   exit 44
 fi
-exec "$@"
+exec /bin/mv "$@"
 EOF
   cat > "$test_root/bin/mount" <<'EOF'
 #!/usr/bin/env bash

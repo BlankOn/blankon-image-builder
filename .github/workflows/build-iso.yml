@@ -40,7 +40,7 @@ jobs:
       - name: Check shell scripts
         run: |
           set -euo pipefail
-          for script in build-iso purge-iso tests/lib.sh tests/build-iso.sh tests/e2e/verify-package-cache.sh; do
+          for script in build-iso purge-iso tests/lib.sh tests/build-iso.sh tests/namespace-dispatch.sh tests/e2e/verify-package-cache.sh; do
             bash -n "$script"
           done
           test -x build-iso

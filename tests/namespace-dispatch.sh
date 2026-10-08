@@ -8,20 +8,20 @@ mkdir -p "$test_root/bin"
 
 cat > "$test_root/bin/unshare" <<'EOF'
 #!/usr/bin/env bash
-expected_options=(--user --map-root-user --mount --pid --fork --mount-proc --propagation private)
+expected_options=(--user --map-users all --map-groups all --mount --pid --fork --mount-proc --propagation private)
 for index in "${!expected_options[@]}"; do
   argument_index=$((index + 1))
   [[ "${!argument_index}" == "${expected_options[$index]}" ]] || exit 20
 done
-[[ $# -ge 9 ]] || exit 21
+[[ $# -ge 12 ]] || exit 21
 if [[ "${!#}" == true ]]; then
-  [[ $# -eq 9 ]] || exit 22
+  [[ $# -eq 12 ]] || exit 22
   printf 'probe\n' >> "$NAMESPACE_TEST_LOG"
   exit 0
 fi
-[[ "$9" == "$NAMESPACE_TEST_SCRIPT" && "${10}" == --container-build ]] || exit 23
+[[ "${12}" == "$NAMESPACE_TEST_SCRIPT" && "${13}" == --container-build ]] || exit 23
 printf 'exec\n' >> "$NAMESPACE_TEST_LOG"
-shift 9
+shift 12
 bash -c '
   source "$1"
   shift

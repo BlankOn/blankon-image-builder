@@ -13,3 +13,5 @@ workdir/
 *.hybrid.iso
 *.hybrid.iso.zsync
 *.sha256sum
+__pycache__/
+*.py[cod]

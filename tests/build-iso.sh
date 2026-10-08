@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
+bash "$(dirname -- "${BASH_SOURCE[0]}")/seccomp-profile.sh"
 bash "$(dirname -- "${BASH_SOURCE[0]}")/namespace-dispatch.sh"
 fixture_init
 

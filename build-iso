@@ -357,12 +357,34 @@ run_in_container() {
     exit 1
   }
 
+  local docker_security_options
+  docker_security_options=$(docker info --format '{{json .SecurityOptions}}') || {
+    echo "Error: Cannot inspect Docker Engine security options." >&2
+    return 1
+  }
+  if [[ "$docker_security_options" != *rootless* ]]; then
+    echo "Error: A rootless Docker daemon is required. Select or start a rootless daemon without changing the global Docker context; see README.md for host setup requirements." >&2
+    return 1
+  fi
+
   local host_uid host_gid
   host_uid=$(id -u) || return 1
   host_gid=$(id -g) || return 1
+  local docker_server_version
+  docker_server_version=$(docker version --format '{{.Server.Version}}') || {
+    echo "Error: Cannot determine Docker Engine server version." >&2
+    return 1
+  }
   exec {PACKAGE_CACHE_LOCK_FD}>"$SCRIPT_DIR/workdir/.package-cache.lock" || return 1
   flock -n "$PACKAGE_CACHE_LOCK_FD" || { echo "Error: Package cache is in use by another build or purge" >&2; return 1; }
-  BUILD_LOCAL="$BUILD_LOCAL_ROOT" HOST_UID="$host_uid" HOST_GID="$host_gid" PACKAGE_CACHE_LOCK_HELD=1 docker compose \
+  BUILD_LOCAL="$BUILD_LOCAL_ROOT" HOST_UID="$host_uid" HOST_GID="$host_gid" BUILDER_UID=0 BUILDER_GID=0 docker compose \
+    --project-directory "$SCRIPT_DIR" \
+    --env-file "$SCRIPT_DIR/.env" \
+    run --build --rm --no-deps seccomp-profile-generator "$docker_server_version" || {
+      echo "Error: Failed to generate a seccomp profile matching Docker Engine $docker_server_version; builder was not started." >&2
+      return 1
+    }
+  BUILD_LOCAL="$BUILD_LOCAL_ROOT" HOST_UID="$host_uid" HOST_GID="$host_gid" BUILDER_UID=0 BUILDER_GID=0 PACKAGE_CACHE_LOCK_HELD=1 docker compose \
     --project-directory "$SCRIPT_DIR" \
     --env-file "$SCRIPT_DIR/.env" \
     run --build --rm -e PACKAGE_CACHE_LOCK_HELD=1 builder /builder/build-iso --namespace-build "$@"
@@ -525,11 +547,11 @@ run_container_build() {
 
 run_namespace_build() {
   shift
-  if ! unshare --user --map-root-user --mount --pid --fork --mount-proc --propagation private true; then
+  if ! unshare --user --map-users all --map-groups all --mount --pid --fork --mount-proc --propagation private true; then
     echo "Error: Rootless build namespace failed. Check that the host enables unprivileged user namespaces and that Docker's seccomp/runtime policy permits unshare plus user, PID, and mount namespaces." >&2
     return 1
   fi
-  unshare --user --map-root-user --mount --pid --fork --mount-proc --propagation private "$SCRIPT_DIR/build-iso" --container-build "$@"
+  unshare --user --map-users all --map-groups all --mount --pid --fork --mount-proc --propagation private "$SCRIPT_DIR/build-iso" --container-build "$@"
 }
 
 main() {

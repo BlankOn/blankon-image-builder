@@ -20,6 +20,9 @@ RUN apt-get update \
         jq \
         tar \
         ca-certificates \
+        python3 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workdir
+
+COPY tools/generate_seccomp_profile.py /usr/local/bin/generate-seccomp-profile.py

@@ -1,9 +1,9 @@
 # BlankOn image-builder
 
 Orchestration for building BlankOn live-build images. `build-iso` validates the
-request, then runs the build through Docker Compose as the host caller's
-numeric UID/GID. The container enters rootless user, PID, and mount namespaces
-for live-build, where the caller is mapped to namespace root. Host directories
+request, then runs the build through Docker Compose as root under a rootless
+Docker daemon. The container enters nested user, PID, and mount namespaces
+for live-build, inheriting the daemon's subordinate UID/GID mappings. Host directories
 are mounted at their same absolute paths inside the container.
 
 Keep `.env` beside `build-iso`; `build-iso` loads that file from its own
@@ -11,25 +11,64 @@ repository directory.
 
 ## Requirements
 
-- Linux host with Docker Engine and the Docker Compose plugin.
+- Linux host with a rootless Docker Engine and the Docker Compose plugin.
+- Host-installed `newuidmap` and `newgidmap`, plus at least 65,536 subordinate
+  UIDs and GIDs assigned to the user in `/etc/subuid` and `/etc/subgid`.
 - Permission to use Docker with a compatible, narrowly scoped runtime policy.
 - Writable host directories for `BUILD_LOCAL`, `BUILD_JAHITAN_PATH`, and the
   repository's `workdir`; Docker must be allowed to mount them.
 - A Telegram bot token for build notifications. Keep it private.
 
-The host kernel must enable unprivileged user namespaces. Standard Docker
-seccomp/runtime policies may block rootless `unshare` and mount operations. The
-operator must configure a compatible, narrowly scoped policy/profile permitting
-the required user, PID, and mount namespaces and live-build syscalls. Do not
-enable privileged mode, use `seccomp=unconfined`, or broadly relax the policy.
+The project does not install or configure host Docker, start a Docker daemon,
+or edit host subordinate-ID files. Configure rootless Docker and its subordinate
+ID ranges on the host before building. `build-iso` rejects a selected daemon
+unless Docker reports the `rootless` security option; it does not change the
+global Docker context or daemon selection.
 
-Run `./build-iso` as the host user that should own generated files. The
-`workdir` directory, generated build directories, and outputs are created by
-the host caller's UID/GID and remain user-owned, including after failed builds.
+The host kernel must enable unprivileged user namespaces. Before starting the
+builder, `build-iso` asks Docker for its server version and runs a generator
+container using that same builder image. The generator fetches the exact Moby
+Engine `docker-v<server-version>` default seccomp profile and writes a
+full-derived profile to `workdir/seccomp-livebuild.json`. This requires network
+access from the generator container to `raw.githubusercontent.com`; generation
+fails closed and the builder is not started if the matching profile cannot be
+fetched, parsed, or validated. The generated file is ignored and recreated for
+each build. The seccomp baseline version therefore tracks the Docker Engine
+server, not the Docker CLI or image. Upstream version tags are fetched over
+HTTPS but are not pinned to a commit or content digest so this remains portable
+across Engine versions. Structural and policy validation detects malformed or
+unexpected profile structure, but does not cryptographically authenticate the
+tag contents; trusting GitHub and Moby's version tags is a residual supply-chain
+risk.
+
+The builder profile permits only the exact `unshare` namespace flags used by
+the build and enables `mount`, `umount`, `umount2`, `chroot`, and the newer mount
+API calls `open_tree`, `move_mount`, `mount_setattr`, `fsopen`, `fsconfig`,
+`fsmount`, and `fspick` without adding capabilities or privileged mode. Kernel
+namespace capability checks still gate these calls; the process receives those
+capabilities only inside its new user namespace. Seccomp cannot constrain mount
+source or target strings or the operations selected through these mount APIs,
+which is an explicit residual risk of permitting these syscall families. Hosts
+with other LSMs may impose additional policy; AppArmor and SELinux are not
+disabled here.
+
+Only the `builder` also uses `systempaths=unconfined`. Docker's default masked
+and read-only `/proc` entries prevent the kernel from mounting a fresh procfs
+inside the nested user/mount namespace; unconfined system paths allow that
+`--mount-proc` step. This turns off Docker's default masked-path and read-only-
+path confinement, broadening visibility and writability of system paths inside
+the builder. It is a builder-only tradeoff: the custom seccomp filter and
+user/mount namespace capability checks remain active. No privileged mode, outer
+`CAP_SYS_ADMIN`, or `seccomp=unconfined` is used.
+
+Run `./build-iso` as the rootless Docker daemon's owning host user. Container
+root maps to that caller through rootless Docker's outer mapping, so the
+`workdir` directory, generated build directories, and outputs remain user-owned,
+including after failed builds.
 Older date-stamped outputs are not changed. Rootless UID mapping makes an
-ownership handoff unnecessary when Docker maps the selected container UID/GID
-back to the invoking host caller. Docker user-namespace remapping or rootless
-Docker may need mapping-specific setup; those configurations are not verified.
+ownership handoff unnecessary. The nested `unshare` maps all outer user and
+group IDs so package owners such as `shadow` remain mapped. Host user-namespace
+and ID-map configuration must provide the required ranges.
 
 ## Layout and setup
 
@@ -118,6 +157,7 @@ Use the same environment file as `build-iso`:
 
 ```sh
 export HOST_UID=$(id -u) HOST_GID=$(id -g)
+export BUILDER_UID=0 BUILDER_GID=0
 docker compose --env-file .env config --quiet
 docker compose --env-file .env build
 ```
@@ -139,6 +179,8 @@ Actions artifacts. Archive connection timeouts are retried up to twice; other
 build failures fail immediately. To build the complete GNOME image in both
 modes, run the Build ISO workflow manually with the `gnome` profile; that
 profile uses the `blankon-live-build` `variant-gnome` branch on GitHub.
+The generated policy starts from the version-tagged Moby Engine default profile
+and must be re-reviewed if supported Docker Engine defaults change.
 After each small E2E ISO, CI also checks that real downloaded `.deb` files were
 saved and that restoring the cache into a fresh workspace preserves their
 SHA-256 hashes. It then purges that same runner's real package cache and checks
@@ -146,13 +188,13 @@ that the build configuration and published output remain. The separate Cache
 and Purge ISO workflows test reuse, invalidation, locking, and unsafe paths
 with fast fixtures on their own runners.
 
-CI suppresses Telegram notifications. Its temporary builder image selects the
-Sinambung archive because the published base image still points at the retired
-Verbeek archive; the repository's Dockerfile is unchanged. Cache checks saving,
-reuse, `archive.conf` key changes, and the shared build/purge lock. Purge ISO
-checks cache removal, symlinks, and mount refusal. Publication stages a new
-`current` before replacing it; failed staging leaves the previous output
-available.
+CI suppresses Telegram notifications and uses the published base image, which
+is now configured for the Sinambung archive. It no longer creates a temporary
+Dockerfile or Compose override for archive selection; the production Dockerfile
+remains unchanged. Cache checks saving, reuse, `archive.conf` key changes, and
+the shared build/purge lock. Purge ISO checks cache removal, symlinks, and mount
+refusal. Publication stages a new `current` before replacing it; failed staging
+leaves the previous output available.
 
 ## Troubleshooting
 
@@ -160,13 +202,21 @@ available.
   existing path, and run from this repository.
 - **Local path outside `BUILD_LOCAL`**: move the checkout below that directory
   or use a relative path such as `blankon-live-build`.
-- **Docker unavailable**: start Docker Engine and verify the Compose plugin with
-  `docker compose version`; ensure the user can use Docker.
+- **Rootless Docker required**: configure and select a rootless Docker daemon
+  for the caller, then verify it reports `rootless` in `docker info` and that
+  `docker compose version` succeeds. Ensure host `newuidmap`/`newgidmap` and
+  subordinate UID/GID ranges of at least 65,536 are configured. This project
+  does not install/configure host Docker or edit `/etc/subuid` or `/etc/subgid`.
 - **Rootless build namespace unavailable**: enable unprivileged user namespaces
-  in the host kernel and configure a narrowly scoped Docker seccomp/runtime
-  policy permitting the required user, PID, and mount namespaces and live-build
-  syscalls. Standard policies may block these operations; do not use privileged
-  mode or `seccomp=unconfined`.
+  in the host kernel. The project generates a Docker-version-matched seccomp
+  profile for the builder and purge services; host kernel, LSM, or runtime policy
+  may still independently restrict user, PID, and mount namespaces or live-build
+  syscalls. The builder additionally uses `systempaths=unconfined` to permit
+  mounting proc in the nested namespace, which disables Docker's default masked
+  and read-only system-path restrictions for that service. The custom seccomp
+  filter and namespace capability checks remain active, while permitted mount
+  syscall arguments remain unconstrained. Standard policies may block these
+  operations; do not use privileged mode or `seccomp=unconfined`.
 - **Mount or permission errors**: create the configured host directories, make
   them writable for Docker, and check Docker's host-path sharing policy.
 - **Stale lock**: confirm no build is running, then remove the lock in the

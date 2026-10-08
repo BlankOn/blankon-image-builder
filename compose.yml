@@ -2,7 +2,10 @@ services:
   builder:
     build: .
     working_dir: /workdir
-    user: "${HOST_UID:?HOST_UID is required}:${HOST_GID:?HOST_GID is required}"
+    user: "${BUILDER_UID:?BUILDER_UID is required}:${BUILDER_GID:?BUILDER_GID is required}"
+    security_opt:
+      - seccomp=./workdir/seccomp-livebuild.json
+      - systempaths=unconfined
     env_file: .env
     environment:
       BUILDER_CONTAINER: "1"
@@ -13,3 +16,10 @@ services:
       - .:/builder:ro
       - ${BUILD_LOCAL}:${BUILD_LOCAL}
       - ${BUILD_JAHITAN_PATH}:${BUILD_JAHITAN_PATH}
+  seccomp-profile-generator:
+    build: .
+    working_dir: /workdir
+    user: "${BUILDER_UID:?BUILDER_UID is required}:${BUILDER_GID:?BUILDER_GID is required}"
+    volumes:
+      - ./workdir:/workdir
+    entrypoint: ["python3", "/usr/local/bin/generate-seccomp-profile.py"]

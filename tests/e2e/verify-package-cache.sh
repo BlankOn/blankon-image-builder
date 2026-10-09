@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source /builder/build-iso
+source /usr/local/bin/build-iso
 WORKSPACE_DIR=/workdir
 ARCH=amd64
 cache_key=$(package_cache_key)

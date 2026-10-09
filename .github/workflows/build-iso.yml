@@ -23,7 +23,6 @@ concurrency:
 
 jobs:
   build-iso:
-    if: ${{ github.ref != 'refs/heads/podman' && (github.event_name != 'pull_request' || github.base_ref != 'podman') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     strategy:
@@ -38,29 +37,35 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: docker/setup-docker-action@v5
-        with:
-          rootless: true
+      - name: Install rootless Podman runtime
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y podman uidmap slirp4netns fuse-overlayfs
+          podman info --format '{{.Host.Security.Rootless}}' | grep -qx true
 
       - name: Check shell scripts
         run: |
           set -euo pipefail
-          for script in build-iso purge-iso tests/lib.sh tests/build-iso.sh tests/seccomp-profile.sh tests/namespace-dispatch.sh tests/e2e/verify-package-cache.sh; do
+          for script in build-iso purge-iso tests/lib.sh tests/build-iso.sh tests/seccomp-profile.sh tests/namespace-dispatch.sh tests/e2e/verify-package-cache.sh tests/cache.sh tests/purge.sh tests/mount-cleanup.sh tests/podman-wrapper.sh tests/podman-build-lock.sh; do
             bash -n "$script"
           done
-          python3 -m py_compile tools/generate_seccomp_profile.py tests/seccomp-profile.py
           bash tests/seccomp-profile.sh
+          bash tests/namespace-dispatch.sh
+          bash tests/mount-cleanup.sh
+          bash tests/build-iso.sh
+          bash tests/cache.sh
+          bash tests/purge.sh
+          bash tests/podman-wrapper.sh
+          bash tests/podman-build-lock.sh
+          python3 tests/patch-live-build-sysfs.py
           test -x build-iso
-
-      - name: Exercise failure and publication paths
-        run: bash tests/build-iso.sh
 
       - name: Free disk space for the GNOME image
         if: ${{ inputs.profile == 'gnome' }}
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
             /usr/local/share/boost /opt/hostedtoolcache
-          docker image prune --all --force
           df -h /
 
       - name: Prepare live-build source
@@ -82,9 +87,9 @@ jobs:
             git -C "$source_root/blankon-live-build" \
               -c user.name='BlankOn CI' -c user.email='ci@blankonlinux.id' \
               commit -qm 'Minimal live-build E2E source'
-            git clone --bare "$source_root/blankon-live-build" "$source_root/remote.git"
-            sudo chown -R root:root "$source_root/remote.git"
-            source_repo="file://$source_root/remote.git"
+            mkdir -p "$GITHUB_WORKSPACE/workdir"
+            git clone --bare "$source_root/blankon-live-build" "$GITHUB_WORKSPACE/workdir/ci-remote.git"
+            source_repo=file:///workdir/ci-remote.git
             source_branch=ci
             expected_variant=ci
           fi
@@ -97,7 +102,7 @@ jobs:
           printf 'LIVE_BUILD_SHA=%s\n' \
             "$(git -C "$source_root/blankon-live-build" rev-parse HEAD)" >> "$GITHUB_ENV"
 
-      - name: Prepare Compose environment
+      - name: Prepare safe build environment
         run: |
           set -euo pipefail
           umask 077
@@ -116,30 +121,6 @@ jobs:
             printf 'BUILD_JAHITAN_PATH=%s\n' "$RUNNER_TEMP/blankon-ci-jahitan"
             printf 'BUILD_PUBLISH_URL=%s\n' 'https://example.invalid/iso'
           } > .env
-          printf 'HOST_UID=%s\n' "$(id -u)" >> "$GITHUB_ENV"
-          printf 'HOST_GID=%s\n' "$(id -g)" >> "$GITHUB_ENV"
-          printf 'BUILDER_UID=0\n' >> "$GITHUB_ENV"
-          printf 'BUILDER_GID=0\n' >> "$GITHUB_ENV"
-
-      - name: Validate Compose configuration
-        run: docker compose --project-directory "$GITHUB_WORKSPACE" --env-file .env config --quiet
-
-      - name: Build CI builder image
-        run: docker compose --project-directory "$GITHUB_WORKSPACE" --env-file .env build
-
-      - name: Generate Docker-matched seccomp profile
-        run: |
-          set -euo pipefail
-          docker_server_version=$(docker version --format '{{.Server.Version}}')
-          HOST_UID="$(id -u)" HOST_GID="$(id -g)" \
-            docker compose --project-directory "$GITHUB_WORKSPACE" --env-file .env \
-              run --rm --no-deps seccomp-profile-generator "$docker_server_version"
-
-      - name: Check builder tools
-        run: |
-          docker compose --project-directory "$GITHUB_WORKSPACE" --env-file .env run --rm --no-deps builder \
-            sh -ec 'for tool in lb debootstrap zsyncmake flock findmnt; do command -v "$tool"; done'
-
       - name: Build real ${{ matrix.mode }} ${{ inputs.profile || 'e2e' }} ISO
         run: |
           set -euo pipefail
@@ -178,14 +159,23 @@ jobs:
           current="$RUNNER_TEMP/blankon-ci-jahitan/current"
           test -s "$current/$(basename "$iso")"
           test -s "$current/current.txt"
+          expected_owner="$(id -u):$(id -g)"
+          for path in "$RUNNER_TEMP/blankon-ci-jahitan" "$(dirname "$iso")" "$iso" "$iso.sha256sum" "$iso.zsync" "$current" "$current/$(basename "$iso")" "$current/current.txt"; do
+            test "$(stat -c '%u:%g' "$path")" = "$expected_owner"
+          done
           df -h /
 
       - name: Verify real package cache restore
         if: ${{ inputs.profile != 'gnome' }}
         run: |
           set -euo pipefail
-          docker compose --project-directory "$GITHUB_WORKSPACE" --env-file .env run --rm --no-deps builder \
-            bash /builder/tests/e2e/verify-package-cache.sh
+          exec {cache_lock_fd}>>"$GITHUB_WORKSPACE/workdir/.package-cache.lock"
+          flock -n "$cache_lock_fd"
+          podman run --rm --userns=host --user 0:0 --workdir /workdir \
+            --volume "$GITHUB_WORKSPACE/workdir:/workdir:rw" \
+            --volume "$GITHUB_WORKSPACE/workdir/.package-cache.lock:/workdir/.package-cache.lock:ro" \
+            --volume "$GITHUB_WORKSPACE/tests/e2e/verify-package-cache.sh:/tmp/verify-package-cache.sh:ro" \
+            blankon-image-builder:podman bash /tmp/verify-package-cache.sh
 
       - name: Purge real package cache
         if: ${{ inputs.profile != 'gnome' }}

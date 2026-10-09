@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+bash "$SCRIPT_DIR/tests/podman-wrapper.sh"
 source "$SCRIPT_DIR/build-iso"
 workdir=$(mktemp -d)
 trap 'rm -rf -- "$workdir"' EXIT

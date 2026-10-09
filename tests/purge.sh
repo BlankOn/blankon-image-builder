@@ -54,42 +54,32 @@ fi
 [[ -f "$cache_root/key/fixture.deb" ]]
 
 mkdir -p "$scripts_dir/workdir"
+cp "$repo_dir/Dockerfile" "$scripts_dir/Dockerfile"
 printf 'BUILD_LOCAL=%s\n' "$test_root/local" > "$scripts_dir/.env"
-cat > "$test_root/bin/docker" <<'EOF'
+cat > "$test_root/bin/podman" <<'EOF'
 #!/usr/bin/env bash
-case "$1 $2" in
-  'compose version') exit 0 ;;
-  'info --format')
-    if [[ -n "${TEST_DOCKER_SECURITY_OPTIONS:-}" ]]; then
-      printf '%s\n' "$TEST_DOCKER_SECURITY_OPTIONS"
-    else
-      printf '["name=rootless"]\n'
-    fi
-    ;;
-  'version --format') printf '29.8.0\n' ;;
-  'compose --project-directory')
-    [[ "$BUILDER_UID:$BUILDER_GID" == 0:0 ]] || exit 31
-    if [[ " $* " == *' seccomp-profile-generator '* ]]; then
-      printf 'generator:%s\n' "${@: -1}" >> "$TEST_PURGE_DOCKER_LOG"
-    elif [[ " $* " == *' builder '* ]]; then
-      [[ "$PACKAGE_CACHE_LOCK_HELD" == 1 ]] || exit 32
-      printf 'builder:%s\n' "$*" >> "$TEST_PURGE_DOCKER_LOG"
-    else
-      exit 33
-    fi
+case "$1" in
+  info) [[ "${TEST_PODMAN_ROOTFUL:-0}" == 1 ]] && printf 'false\n' || printf 'true\n' ;;
+  build) printf 'build:%s\n' "$*" >> "$TEST_PURGE_PODMAN_LOG" ;;
+  run)
+    [[ " $* " == *' --userns=host '* ]] || exit 31
+    [[ " $* " == *'/workdir:rw'* ]] || exit 32
+    [[ " $* " == *'/.package-cache.lock:/workdir/.package-cache.lock:ro'* ]] || exit 33
+    printf 'run:%s\n' "$*" >> "$TEST_PURGE_PODMAN_LOG"
     ;;
   *) exit 34 ;;
 esac
 EOF
-chmod +x "$test_root/bin/docker"
-export TEST_PURGE_DOCKER_LOG="$test_root/purge-docker.log"
-if TEST_DOCKER_SECURITY_OPTIONS='["name=seccomp,profile=builtin"]' env -u BUILDER_CONTAINER \
-  BUILD_LOCAL="$test_root/local" bash "$scripts_dir/purge-iso"; then
-  echo 'Error: purge accepted a rootful Docker daemon' >&2
+chmod +x "$test_root/bin/podman"
+export TEST_PURGE_PODMAN_LOG="$test_root/purge-podman.log"
+if TEST_PODMAN_ROOTFUL=1 env -u BUILDER_CONTAINER bash "$scripts_dir/purge-iso"; then
+  echo 'Error: purge accepted rootful Podman' >&2
   exit 1
 fi
-[[ ! -e "$TEST_PURGE_DOCKER_LOG" ]]
-env -u BUILDER_CONTAINER BUILD_LOCAL="$test_root/local" bash "$scripts_dir/purge-iso"
-[[ $(<"$TEST_PURGE_DOCKER_LOG") == $'generator:29.8.0\nbuilder:compose --project-directory'* ]]
+[[ ! -e "$TEST_PURGE_PODMAN_LOG" ]]
+TEST_PODMAN_ROOTFUL=0 env -u BUILDER_CONTAINER bash "$scripts_dir/purge-iso"
+[[ $(<"$TEST_PURGE_PODMAN_LOG") == $'build:build '*$'run:run '* ]]
+[[ $(<"$TEST_PURGE_PODMAN_LOG") != *"$test_root/local"* ]]
+[[ $(<"$TEST_PURGE_PODMAN_LOG") != *"$BUILD_JAHITAN_PATH"* ]]
 
 echo 'Purge ISO smoke checks passed.'

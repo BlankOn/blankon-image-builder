@@ -164,26 +164,14 @@ class SeccompProfileTests(unittest.TestCase):
             "https://raw.githubusercontent.com/moby/moby/docker-v29.8.0/vendor/github.com/moby/profiles/seccomp/default.json",
         )
 
-    def test_systempaths_unconfined_is_builder_only(self):
-        compose_file = Path(__file__).resolve().parents[1] / "compose.yml"
-        compose_text = compose_file.read_text(encoding="utf-8")
-        builder_configuration, generator_configuration = compose_text.split(
-            "  seccomp-profile-generator:", 1
-        )
-        self.assertEqual(compose_text.count("systempaths=unconfined"), 1)
-        self.assertIn("systempaths=unconfined", builder_configuration)
-        self.assertNotIn("systempaths=unconfined", generator_configuration)
-        self.assertNotIn("env_file:", generator_configuration)
-
-    def test_compose_uses_rootless_daemon_root_identity(self):
-        compose_file = Path(__file__).resolve().parents[1] / "compose.yml"
-        compose_text = compose_file.read_text(encoding="utf-8")
-        self.assertEqual(
-            compose_text.count(
-                'user: "${BUILDER_UID:?BUILDER_UID is required}:${BUILDER_GID:?BUILDER_GID is required}"'
-            ),
-            2,
-        )
+    def test_podman_entrypoints_use_host_root_identity_and_default_seccomp(self):
+        root = Path(__file__).resolve().parents[1]
+        build_text = (root / "build-iso").read_text(encoding="utf-8")
+        purge_text = (root / "purge-iso").read_text(encoding="utf-8")
+        for script_text in (build_text, purge_text):
+            self.assertIn("--userns=host --user 0:0", script_text)
+            self.assertNotIn("--security-opt seccomp=unconfined", script_text)
+            self.assertNotIn("--security-opt=seccomp=unconfined", script_text)
 
     def test_namespace_maps_all_outer_user_and_group_ids(self):
         build_script = Path(__file__).resolve().parents[1] / "build-iso"

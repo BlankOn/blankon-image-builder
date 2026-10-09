@@ -4,28 +4,34 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 
 if [[ -z "${BUILDER_CONTAINER:-}" ]]; then
-  [[ ! -f "$SCRIPT_DIR/.env" ]] || source "$SCRIPT_DIR/.env"
+  [[ "$#" -eq 0 ]] || { echo 'Usage: purge-iso' >&2; exit 2; }
   [[ -f "$SCRIPT_DIR/.env" ]] || { echo "Error: Environment file not found: $SCRIPT_DIR/.env" >&2; exit 1; }
-  command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 || { echo "Error: Docker Compose is required" >&2; exit 1; }
-  docker_security_options=$(docker info --format '{{json .SecurityOptions}}') || { echo "Error: Cannot inspect Docker Engine security options." >&2; exit 1; }
-  [[ "$docker_security_options" == *rootless* ]] || { echo "Error: A rootless Docker daemon is required. Select a rootless daemon without changing the global Docker context; see README.md for host setup requirements." >&2; exit 1; }
-  docker_server_version=$(docker version --format '{{.Server.Version}}') || { echo "Error: Cannot determine Docker Engine server version." >&2; exit 1; }
-  BUILD_LOCAL="${BUILD_LOCAL:?BUILD_LOCAL is required}"
-  [[ "$BUILD_LOCAL" == /* && -d "$BUILD_LOCAL" && ! -L "$BUILD_LOCAL" ]] || { echo "Error: BUILD_LOCAL must be a safe absolute directory" >&2; exit 1; }
-  BUILD_LOCAL=$(realpath -- "$BUILD_LOCAL")
-  package_cache_lock="$SCRIPT_DIR/workdir/.package-cache.lock"
+  BUILD_LOCAL=
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*BUILD_LOCAL=(.*)$ ]] || continue
+    [[ -z "$BUILD_LOCAL" ]] || { echo 'Error: Duplicate BUILD_LOCAL assignment in .env.' >&2; exit 1; }
+    BUILD_LOCAL=${BASH_REMATCH[1]}
+    if [[ "$BUILD_LOCAL" == \"* ]]; then [[ "$BUILD_LOCAL" == *\" ]] || exit 1; BUILD_LOCAL=${BUILD_LOCAL:1:${#BUILD_LOCAL}-2};
+    elif [[ "$BUILD_LOCAL" == \'* ]]; then [[ "$BUILD_LOCAL" == *\' ]] || exit 1; BUILD_LOCAL=${BUILD_LOCAL:1:${#BUILD_LOCAL}-2}; fi
+    [[ "$BUILD_LOCAL" =~ ^/[A-Za-z0-9_./[:space:]-]+$ ]] || { echo 'Error: Invalid BUILD_LOCAL assignment in .env.' >&2; exit 1; }
+  done < "$SCRIPT_DIR/.env"
+  [[ "$BUILD_LOCAL" == /* && -d "$BUILD_LOCAL" && ! -L "$BUILD_LOCAL" && "$BUILD_LOCAL" != / ]] || { echo 'Error: BUILD_LOCAL must be a safe absolute directory.' >&2; exit 1; }
+  command -v podman >/dev/null 2>&1 || { echo 'Error: Podman is required.' >&2; exit 1; }
+  [[ "$(env -u TELEGRAM_BOT_KEY -u TELEGRAM_BOT_KEY_FILE podman info --format '{{.Host.Security.Rootless}}')" == true ]] || { echo 'Error: A rootless Podman engine is required.' >&2; exit 1; }
+  [[ ! -L "$SCRIPT_DIR/workdir" ]] || { echo 'Error: workdir cannot be a symlink.' >&2; exit 1; }
   mkdir -p -- "$SCRIPT_DIR/workdir"
-  [[ ! -L "$package_cache_lock" ]] || { echo "Error: Package cache lock cannot be a symlink: $package_cache_lock" >&2; exit 1; }
-  if [[ ! -e "$package_cache_lock" ]]; then
-    ( set -o noclobber; : > "$package_cache_lock" ) 2>/dev/null || { echo "Error: Cannot safely create package cache lock: $package_cache_lock" >&2; exit 1; }
-  fi
-  [[ -f "$package_cache_lock" && ! -L "$package_cache_lock" ]] || { echo "Error: Package cache lock must be a regular file: $package_cache_lock" >&2; exit 1; }
+  package_cache_lock="$SCRIPT_DIR/workdir/.package-cache.lock"
+  [[ ! -L "$package_cache_lock" ]] || { echo 'Error: Package cache lock cannot be a symlink.' >&2; exit 1; }
+  if [[ ! -e "$package_cache_lock" ]]; then ( set -o noclobber; : > "$package_cache_lock" ) 2>/dev/null || exit 1; fi
+  [[ -f "$package_cache_lock" ]] || { echo 'Error: Package cache lock must be a regular file.' >&2; exit 1; }
   exec {LOCK_FD}>>"$package_cache_lock"
-  flock -n "$LOCK_FD" || { echo "Error: Package cache is in use by another build or purge" >&2; exit 1; }
-  host_uid=$(id -u)
-  host_gid=$(id -g)
-  HOST_UID="$host_uid" HOST_GID="$host_gid" BUILDER_UID=0 BUILDER_GID=0 docker compose --project-directory "$SCRIPT_DIR" --env-file "$SCRIPT_DIR/.env" run --build --rm --no-deps seccomp-profile-generator "$docker_server_version" || { echo "Error: Failed to generate a seccomp profile matching Docker Engine $docker_server_version; purge was not started." >&2; exit 1; }
-  HOST_UID="$host_uid" HOST_GID="$host_gid" BUILDER_UID=0 BUILDER_GID=0 BUILD_LOCAL="$BUILD_LOCAL" PACKAGE_CACHE_LOCK_HELD=1 docker compose --project-directory "$SCRIPT_DIR" --env-file "$SCRIPT_DIR/.env" run --build --rm -e PACKAGE_CACHE_LOCK_HELD=1 builder /builder/purge-iso
+  flock -n "$LOCK_FD" || { echo 'Error: Package cache is in use by another build or purge.' >&2; exit 1; }
+  env -u TELEGRAM_BOT_KEY -u TELEGRAM_BOT_KEY_FILE podman build --tag blankon-image-builder:podman --file "$SCRIPT_DIR/Dockerfile" "$SCRIPT_DIR"
+  env -u TELEGRAM_BOT_KEY -u TELEGRAM_BOT_KEY_FILE podman run --rm --userns=host --user 0:0 --workdir /workdir \
+    --volume "$SCRIPT_DIR/workdir:/workdir:rw" \
+    --volume "$package_cache_lock:/workdir/.package-cache.lock:ro" \
+    --env BUILDER_CONTAINER=1 --env PACKAGE_CACHE_LOCK_HELD=1 \
+    blankon-image-builder:podman /usr/local/bin/purge-iso
   exit $?
 fi
 

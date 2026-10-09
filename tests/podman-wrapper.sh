@@ -1,173 +1,285 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 fixture=$(mktemp -d)
 trap 'rm -rf -- "$fixture"' EXIT
-
-mkdir -p "$fixture/source root/checkout" "$fixture/builder repo/tools" "$fixture/output root" "$fixture/bin"
-cp "$SCRIPT_DIR/tools/podman-build-iso.sh" "$fixture/builder repo/tools/podman-build-iso.sh"
+mkdir -p "$fixture/bin" "$fixture/builder" "$fixture/source root/checkout" "$fixture/output root" "$fixture/locks"
+cp "$repo_dir/build-iso" "$repo_dir/purge-iso" "$repo_dir/Dockerfile" "$fixture/builder/"
+mkdir -p "$fixture/builder/tools"
+cp "$repo_dir/tools/patch-live-build-sysfs.py" "$fixture/builder/tools/"
 cat > "$fixture/bin/podman" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
+[[ "${TELEGRAM_BOT_KEY:-}" != synthetic-fixture-token && "${TELEGRAM_BOT_KEY_FILE:-}" == '' && " $* " != *synthetic-fixture-token* ]] || exit 83
 case "$1" in
-  info) printf 'true\n' ;;
-  build) ;;
-  run) printf '%s\n' "$@" > "$PODMAN_ARGS" ;;
+  info) [[ "${TELEGRAM_BOT_KEY:-}" != synthetic-fixture-token && "${TELEGRAM_BOT_KEY_FILE:-}" == '' ]] || exit 80; [[ "${ROOTFUL:-0}" == 1 ]] && printf 'false\n' || printf 'true\n' ;;
+  build|run) [[ "${TELEGRAM_BOT_KEY:-}" != synthetic-fixture-token && "${TELEGRAM_BOT_KEY_FILE:-}" == '' ]] || exit 81; printf '%s\n' "$1" >> "$PODMAN_LOG"; printf '%s\n' "$@" >> "$PODMAN_LOG"; [[ "$1" != run || "${RUN_FAIL:-0}" != 1 ]] || exit 42 ;;
+  secret) exit 82 ;;
   *) exit 2 ;;
 esac
 SH
 chmod +x "$fixture/bin/podman"
+cat > "$fixture/bin/curl" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "$CURL_ARGUMENTS"
+request_config=$(</dev/stdin)
+printf '%s\n' "$request_config" >> "$CURL_CONFIG"
+[[ "${TELEGRAM_BOT_KEY:-}" != synthetic-fixture-token ]]
+[[ "${CURL_FAIL:-0}" != 1 ]]
+SH
+chmod +x "$fixture/bin/curl"
+cat > "$fixture/builder/.env" <<EOF
+BUILD_LOCAL="$fixture/source root"
+BUILD_LOCKFILE="$fixture/locks/build lock"
+BUILD_JAHITAN_PATH="$fixture/output root"
+BUILD_PUBLISH_URL=https://example.invalid/iso
+TELEGRAM_BOT_KEY=synthetic-fixture-token
+BUILD_SEND_TELEGRAM=1
+EOF
+export PODMAN_LOG="$fixture/podman.log" PATH="$fixture/bin:$PATH"
+export CURL_ARGUMENTS="$fixture/curl-arguments" CURL_CONFIG="$fixture/curl-config"
+export PODMAN_USERNS=keep-id
 
-printf 'BUILD_LOCAL="%s"\n' "$fixture/source root" > "$fixture/synthetic.env"
-printf 'BUILD_JAHITAN_PATH="%s"\n' "$fixture/output root" >> "$fixture/synthetic.env"
-printf 'BUILD_PUBLISH_URL=https://example.invalid\n' >> "$fixture/synthetic.env"
-printf 'BUILD_LOCKFILE="%s"\n' "$fixture/source root/build-lock" >> "$fixture/synthetic.env"
-printf 'TELEGRAM_BOT_KEY=$(touch %s)\n' "$fixture/host-env-executed" >> "$fixture/synthetic.env"
-PODMAN_ENV_FILE="$fixture/synthetic.env" PODMAN_ARGS="$fixture/podman-args" \
-  PATH="$fixture/bin:$PATH" bash "$fixture/builder repo/tools/podman-build-iso.sh" --local 'checkout'
-[[ ! -e "$fixture/host-env-executed" ]]
-mapfile -t podman_arguments < "$fixture/podman-args"
-[[ "${podman_arguments[-1]}" == "$fixture/source root/checkout" ]]
-[[ " ${podman_arguments[*]} " == *" $fixture/source root/checkout:$fixture/source root/checkout:ro "* ]]
-[[ " ${podman_arguments[*]} " != *" $fixture/source root:$fixture/source root "* ]]
-[[ " ${podman_arguments[*]} " != *" $fixture/builder repo "* ]]
-[[ " ${podman_arguments[*]} " == *" BUILD_LOCAL=$fixture/source root/checkout "* ]]
-[[ " ${podman_arguments[*]} " == *" TELEGRAM_BOT_KEY=dummy-token "* ]]
-[[ " ${podman_arguments[*]} " == *" /usr/local/bin/build-iso "* ]]
-[[ " ${podman_arguments[*]} " == *" $fixture/builder repo/workdir/.package-cache.lock:/workdir/.package-cache.lock:ro "* ]]
-[[ " ${podman_arguments[*]} " != *" --internal-podman-build-lockfile "* ]]
-[[ " ${podman_arguments[*]} " == *" BUILD_LOCK_HELD=1 "* ]]
-[[ -f "$fixture/source root/build-lock" ]]
-[[ " ${podman_arguments[*]} " != *" $fixture/source root/checkout/workdir/.podman-build.lock:"* ]]
-[[ " ${podman_arguments[*]} " != *" $fixture/source root/build-lock:$fixture/source root/build-lock:rw "* ]]
-[[ " ${podman_arguments[*]} " == *" $fixture/output root:$fixture/output root:rw "* ]]
+bash "$fixture/builder/build-iso" --local checkout
+[[ $(<"$PODMAN_LOG") == *'--userns=host'* ]]
+[[ $(<"$PODMAN_LOG") == *"$fixture/source root/checkout:$fixture/source root/checkout:ro"* ]]
+[[ $(<"$PODMAN_LOG") == *'--cap-add=SYS_ADMIN'* ]]
+[[ $(<"$PODMAN_LOG") == *'--security-opt'* ]]
+[[ $(<"$PODMAN_LOG") != *"$fixture/builder:$fixture/builder"* ]]
+[[ $(<"$PODMAN_LOG") != *secret* && $(<"$PODMAN_LOG") != *synthetic-fixture-token* ]]
+[[ $(<"$PODMAN_LOG") == *'BUILD_SEND_TELEGRAM=0'* ]]
+python3 - "$CURL_CONFIG" <<'PY'
+import json
+import sys
+from pathlib import Path
 
-rm -f -- "$fixture/builder repo/workdir/.package-cache.lock"
-ln -s "$fixture/output root" "$fixture/builder repo/workdir/.package-cache.lock"
-if PODMAN_ENV_FILE="$fixture/synthetic.env" PODMAN_ARGS="$fixture/symlink-package-cache-lock-ran" \
-  PATH="$fixture/bin:$PATH" bash "$fixture/builder repo/tools/podman-build-iso.sh" --local checkout; then
-  printf 'Error: Symlinked package cache lock was accepted.\n' >&2
+config = Path(sys.argv[1]).read_text()
+fields = dict(line.split(" = ", 1) for line in config.splitlines())
+url = json.loads(fields["url"])
+payload = json.loads(json.loads(fields["data"]))
+assert url.endswith("/sendMessage")
+assert "synthetic-fixture-token" in url
+assert {key: value for key, value in payload.items() if key != "text"} == {
+    "chat_id": "-1001067745576",
+    "message_thread_id": 51909,
+    "parse_mode": "HTML",
+    "disable_web_page_preview": True,
+    "disable_notification": True,
+}
+assert "Local build" in payload["text"]
+PY
+: > "$CURL_CONFIG"
+TELEGRAM_BOT_KEY=synthetic-fixture-token bash -c 'source "$1/build-iso"; TELEGRAM_BOT_KEY=synthetic-fixture-token; send_telegram $'"'"'quote " slash \\ newline\nnext'"'"'' bash "$fixture/builder"
+python3 - "$CURL_CONFIG" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+fields = dict(line.split(" = ", 1) for line in Path(sys.argv[1]).read_text().splitlines())
+payload = json.loads(json.loads(fields["data"]))
+assert payload["text"] == 'quote &quot; slash \\ newline\nnext'
+PY
+
+: > "$PODMAN_LOG"
+bash "$fixture/builder/build-iso" --remote https://example.invalid/live.git main
+[[ $(<"$PODMAN_LOG") == *'--userns=host'* ]]
+[[ $(<"$PODMAN_LOG") != *"$fixture/source root/checkout:"* ]]
+
+: > "$PODMAN_LOG"
+if RUN_FAIL=1 bash "$fixture/builder/build-iso" --local checkout; then
+  printf 'Error: Failed Podman run was accepted.\n' >&2
   exit 1
 fi
-[[ ! -e "$fixture/symlink-package-cache-lock-ran" ]]
-rm -f -- "$fixture/builder repo/workdir/.package-cache.lock"
+[[ $(<"$PODMAN_LOG") != *secret* ]]
 
-ln -s "$fixture/output root" "$fixture/source root/symlink-lock"
-printf 'BUILD_LOCAL="%s"\n' "$fixture/source root" > "$fixture/synthetic.env"
-printf 'BUILD_JAHITAN_PATH="%s"\n' "$fixture/output root" >> "$fixture/synthetic.env"
-printf 'BUILD_PUBLISH_URL=https://example.invalid\n' >> "$fixture/synthetic.env"
-printf 'BUILD_LOCKFILE="%s/symlink-lock"\n' "$fixture/source root" >> "$fixture/synthetic.env"
-if PODMAN_ENV_FILE="$fixture/synthetic.env" PODMAN_ARGS="$fixture/should-not-run" \
-  PATH="$fixture/bin:$PATH" bash "$fixture/builder repo/tools/podman-build-iso.sh" --local checkout; then
-  printf 'Error: Symlinked build lockfile was accepted.\n' >&2
+: > "$PODMAN_LOG"
+if CURL_FAIL=1 bash "$fixture/builder/build-iso" --local checkout; then
+  printf 'Error: Notification transport failure was accepted.\n' >&2
   exit 1
 fi
-[[ ! -e "$fixture/should-not-run" ]]
+[[ $(<"$PODMAN_LOG") == *'run'* ]]
+[[ $(<"$PODMAN_LOG") != *synthetic-fixture-token* ]]
 
-for root_assignment in BUILD_LOCAL BUILD_JAHITAN_PATH; do
-  printf 'BUILD_LOCAL="%s"\n' "$fixture/source root" > "$fixture/synthetic.env"
-  printf 'BUILD_JAHITAN_PATH="%s"\n' "$fixture/output root" >> "$fixture/synthetic.env"
-  printf 'BUILD_PUBLISH_URL=https://example.invalid\n' >> "$fixture/synthetic.env"
-  printf 'BUILD_LOCKFILE="%s"\n' "$fixture/source root/build lock.lock" >> "$fixture/synthetic.env"
-  printf '%s=/\n' "$root_assignment" >> "$fixture/synthetic.env"
-  if PODMAN_ENV_FILE="$fixture/synthetic.env" PODMAN_ARGS="$fixture/podman-args" \
-    PATH="$fixture/bin:$PATH" bash "$fixture/builder repo/tools/podman-build-iso.sh" --local checkout; then
-    printf 'Error: Root %s assignment was accepted.\n' "$root_assignment" >&2
-    exit 1
-  fi
+: > "$CURL_CONFIG"
+if RUN_FAIL=1 bash "$fixture/builder/build-iso" --local checkout; then exit 1; fi
+python3 - "$CURL_CONFIG" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+fields = dict(line.split(" = ", 1) for line in Path(sys.argv[1]).read_text().splitlines())
+payload = json.loads(json.loads(fields["data"]))
+assert "status failure" in payload["text"]
+PY
+if RUN_FAIL=1 CURL_FAIL=1 bash "$fixture/builder/build-iso" --local checkout; then exit 1; else
+  [[ "$?" -eq 42 ]]
+fi
+
+cat > "$fixture/builder/.env" <<EOF
+BUILD_LOCAL="$fixture/source root"
+BUILD_LOCKFILE="$fixture/locks/build lock"
+BUILD_JAHITAN_PATH="$fixture/output root"
+BUILD_PUBLISH_URL=https://example.invalid/iso
+BUILD_SEND_TELEGRAM=0
+EOF
+: > "$CURL_CONFIG"
+bash "$fixture/builder/build-iso" --remote repo branch
+  [[ ! -s "$CURL_CONFIG" ]]
+
+sed -i "s#BUILD_LOCKFILE=.*#BUILD_LOCKFILE=\"$fixture/source root/.build.lock\"#" "$fixture/builder/.env"
+bash "$fixture/builder/build-iso" --local checkout
+bash "$fixture/builder/build-iso" --remote repo branch
+[[ -f "$fixture/source root/.build.lock" ]]
+sed -i "s#BUILD_LOCKFILE=.*#BUILD_LOCKFILE=\"$fixture/locks/build lock\"#" "$fixture/builder/.env"
+
+: > "$PODMAN_LOG"
+if ROOTFUL=1 bash "$fixture/builder/build-iso" --local checkout; then
+  printf 'Error: Rootful Podman build was accepted.\n' >&2
+  exit 1
+fi
+[[ ! -s "$PODMAN_LOG" ]]
+
+cat > "$fixture/builder/.env" <<EOF
+BUILD_LOCAL="$fixture/source root"
+BUILD_LOCKFILE="$fixture/missing-parent/build.lock"
+BUILD_JAHITAN_PATH="$fixture/not-created-output"
+BUILD_PUBLISH_URL=https://example.invalid/iso
+BUILD_SEND_TELEGRAM=0
+EOF
+rm -rf -- "$fixture/builder/workdir"
+if bash "$fixture/builder/build-iso" --remote repo branch; then exit 1; fi
+[[ ! -e "$fixture/not-created-output" && ! -e "$fixture/builder/workdir" ]]
+
+cat > "$fixture/builder/.env" <<EOF
+BUILD_LOCAL="$fixture/source root"
+BUILD_LOCKFILE="$fixture/locks/build lock"
+BUILD_JAHITAN_PATH="$fixture/output root"
+BUILD_PUBLISH_URL=https://example.invalid/iso
+BUILD_SEND_TELEGRAM=0
+EOF
+for invalid_args in 'bad' '--local' '--local checkout extra' '--remote repo' '--remote repo branch commit extra' '--namespace-build --remote repo branch'; do
+  : > "$PODMAN_LOG"
+  if bash "$fixture/builder/build-iso" $invalid_args; then exit 1; fi
+  [[ ! -s "$PODMAN_LOG" ]]
 done
 
-printf 'BUILD_LOCAL="%s"\n' "$fixture/source root" > "$fixture/synthetic.env"
-printf 'BUILD_JAHITAN_PATH="%s"\n' "$fixture/source root" >> "$fixture/synthetic.env"
-printf 'BUILD_PUBLISH_URL=https://example.invalid\n' >> "$fixture/synthetic.env"
-printf 'BUILD_LOCKFILE="%s"\n' "$fixture/source root/build lock.lock" >> "$fixture/synthetic.env"
-if PODMAN_ENV_FILE="$fixture/synthetic.env" PODMAN_ARGS="$fixture/podman-args" \
-  PATH="$fixture/bin:$PATH" bash "$fixture/builder repo/tools/podman-build-iso.sh" --local checkout; then
-  printf 'Error: Writable path overlapping the source checkout was accepted.\n' >&2
-  exit 1
-fi
-
-for overlapping_output in "$fixture/source root" "$fixture" "$fixture/source root/checkout" "$fixture/builder repo" "$fixture/builder repo/workdir"; do
-  printf 'BUILD_LOCAL="%s"\n' "$fixture/source root" > "$fixture/synthetic.env"
-  printf 'BUILD_JAHITAN_PATH="%s"\n' "$overlapping_output" >> "$fixture/synthetic.env"
-  printf 'BUILD_PUBLISH_URL=https://example.invalid\n' >> "$fixture/synthetic.env"
-  printf 'BUILD_LOCKFILE="%s/build lock.lock"\n' "$fixture/source root" >> "$fixture/synthetic.env"
-  if PODMAN_ENV_FILE="$fixture/synthetic.env" PODMAN_ARGS="$fixture/podman-args" \
-    PATH="$fixture/bin:$PATH" bash "$fixture/builder repo/tools/podman-build-iso.sh" --local checkout; then
-    printf 'Error: Overlapping output path was accepted: %s\n' "$overlapping_output" >&2
-    exit 1
-  fi
+ln -s / "$fixture/root-alias"
+sed -i "s#BUILD_LOCAL=.*#BUILD_LOCAL=\"$fixture/root-alias\"#" "$fixture/builder/.env"
+if bash "$fixture/builder/build-iso" --remote repo branch; then exit 1; fi
+[[ ! -s "$PODMAN_LOG" ]]
+sed -i "s#BUILD_LOCAL=.*#BUILD_LOCAL=\"$fixture/source root\"#" "$fixture/builder/.env"
+sed -i "s#BUILD_JAHITAN_PATH=.*#BUILD_JAHITAN_PATH=\"$fixture/root-alias\"#" "$fixture/builder/.env"
+if bash "$fixture/builder/build-iso" --remote repo branch; then exit 1; fi
+[[ ! -s "$PODMAN_LOG" ]]
+sed -i "s#BUILD_JAHITAN_PATH=.*#BUILD_JAHITAN_PATH=\"$fixture/output root\"#" "$fixture/builder/.env"
+sed -i "s#BUILD_LOCAL=.*#BUILD_LOCAL=\"$fixture\"#" "$fixture/builder/.env"
+for refused_source in "$fixture/builder" "$fixture"; do
+  if bash "$fixture/builder/build-iso" --local "$refused_source"; then exit 1; fi
 done
+cat > "$fixture/builder/.env" <<EOF
+BUILD_LOCAL="$fixture/source root"
+BUILD_LOCKFILE="$fixture/locks/build lock"
+BUILD_JAHITAN_PATH="$fixture/output root"
+BUILD_PUBLISH_URL=https://example.invalid/iso
+BUILD_SEND_TELEGRAM=0
+EOF
+ln -s "$fixture/locks" "$fixture/source root/outside-link"
+if bash "$fixture/builder/build-iso" --local "$fixture/source root/outside-link"; then exit 1; fi
+[[ ! -s "$PODMAN_LOG" ]]
 
-printf 'BUILD_LOCAL="%s"\n' "$fixture/source root" > "$fixture/synthetic.env"
-printf 'BUILD_JAHITAN_PATH="%s/source root/checkout"\n' "$fixture" >> "$fixture/synthetic.env"
-printf 'BUILD_PUBLISH_URL=https://example.invalid\n' >> "$fixture/synthetic.env"
-printf 'BUILD_LOCKFILE="%s/build lock.lock"\n' "$fixture/source root" >> "$fixture/synthetic.env"
-if PODMAN_ENV_FILE="$fixture/synthetic.env" PODMAN_ARGS="$fixture/should-not-run" \
-  PATH="$fixture/bin:$PATH" bash "$fixture/builder repo/tools/podman-build-iso.sh" --remote https://example.invalid/live.git main; then
-  printf 'Error: Remote output overlapping BUILD_LOCAL was accepted.\n' >&2
+child_output="$fixture/source root/safe-output"
+sed -i "s#BUILD_JAHITAN_PATH=.*#BUILD_JAHITAN_PATH=\"$child_output\"#" "$fixture/builder/.env"
+bash "$fixture/builder/build-iso" --remote repo branch
+bash "$fixture/builder/build-iso" --local checkout
+[[ -d "$child_output" ]]
+
+refused_output="$fixture/source root/checkout/not-created/subdir"
+sed -i "s#BUILD_JAHITAN_PATH=.*#BUILD_JAHITAN_PATH=\"$refused_output\"#" "$fixture/builder/.env"
+: > "$PODMAN_LOG"
+if bash "$fixture/builder/build-iso" --local checkout; then exit 1; fi
+[[ ! -e "$refused_output" ]]
+
+cat > "$fixture/builder/.env" <<EOF
+BUILD_LOCAL="$fixture/source root"
+BUILD_LOCKFILE="$fixture/locks/build lock"
+BUILD_JAHITAN_PATH="$fixture/source root/checkout"
+BUILD_PUBLISH_URL=https://example.invalid/iso
+BUILD_SEND_TELEGRAM=0
+EOF
+: > "$PODMAN_LOG"
+if bash "$fixture/builder/build-iso" --local checkout; then
+  printf 'Error: Output overlapping local source was accepted.\n' >&2
   exit 1
 fi
-[[ ! -e "$fixture/should-not-run" ]]
+[[ ! -s "$PODMAN_LOG" ]]
 
-rm -rf -- "$fixture/builder repo/workdir"
-mkdir -p "$fixture/external-workdir"
-ln -s "$fixture/external-workdir" "$fixture/builder repo/workdir"
-printf 'BUILD_LOCAL="%s"\n' "$fixture/source root" > "$fixture/synthetic.env"
-printf 'BUILD_JAHITAN_PATH="%s"\n' "$fixture/output root" >> "$fixture/synthetic.env"
-printf 'BUILD_PUBLISH_URL=https://example.invalid\n' >> "$fixture/synthetic.env"
-printf 'BUILD_LOCKFILE="%s/build lock.lock"\n' "$fixture/source root" >> "$fixture/synthetic.env"
-if PODMAN_ENV_FILE="$fixture/synthetic.env" PODMAN_ARGS="$fixture/should-not-run" \
-  PATH="$fixture/bin:$PATH" bash "$fixture/builder repo/tools/podman-build-iso.sh" --local checkout; then
-  printf 'Error: Symlinked workdir was accepted.\n' >&2
+cat > "$fixture/builder/.env" <<EOF
+BUILD_LOCAL="$fixture/source root"
+BUILD_LOCKFILE="$fixture/output root/build.lock"
+BUILD_JAHITAN_PATH="$fixture/output root"
+BUILD_PUBLISH_URL=https://example.invalid/iso
+BUILD_SEND_TELEGRAM=0
+EOF
+: > "$PODMAN_LOG"
+if bash "$fixture/builder/build-iso" --remote repo branch; then exit 1; fi
+[[ ! -s "$PODMAN_LOG" ]]
+
+cat > "$fixture/builder/.env" <<EOF
+BUILD_LOCAL="$fixture/source root"
+BUILD_LOCKFILE="$fixture/locks/build lock"
+BUILD_JAHITAN_PATH="$fixture/output root"
+BUILD_PUBLISH_URL=https://example.invalid/iso
+BUILD_SEND_TELEGRAM=0
+EOF
+ln -s "$fixture/output root" "$fixture/locks/unsafe-lock"
+sed -i "s#BUILD_LOCKFILE=.*#BUILD_LOCKFILE=\"$fixture/locks/unsafe-lock\"#" "$fixture/builder/.env"
+if bash "$fixture/builder/build-iso" --remote https://example.invalid/live.git main; then
+  printf 'Error: Symlinked build lock was accepted.\n' >&2
   exit 1
 fi
-[[ ! -e "$fixture/should-not-run" ]]
+[[ ! -s "$PODMAN_LOG" ]]
 
-printf 'BUILD_LOCAL=%s\n' "$fixture/source root" > "$fixture/synthetic.env"
-printf 'BUILD_LOCAL=%s\n' "$fixture/source root" >> "$fixture/synthetic.env"
-printf 'BUILD_JAHITAN_PATH=%s\n' "$fixture/output root" >> "$fixture/synthetic.env"
-printf 'BUILD_LOCKFILE=%s\n' "$fixture/source root/build lock.lock" >> "$fixture/synthetic.env"
-if PODMAN_ENV_FILE="$fixture/synthetic.env" PODMAN_ARGS="$fixture/podman-args" \
-  PATH="$fixture/bin:$PATH" bash "$fixture/builder repo/tools/podman-build-iso.sh" --local checkout; then
-  printf 'Error: Duplicate path assignment was accepted.\n' >&2
+cat > "$fixture/builder/.env" <<EOF
+BUILD_LOCAL="$fixture/source root"
+BUILD_LOCKFILE="$fixture/locks/build lock"
+BUILD_JAHITAN_PATH="$fixture/output root"
+BUILD_PUBLISH_URL=https://example.invalid/iso
+BUILD_SEND_TELEGRAM=0
+EOF
+
+exec {held_lock_fd}>>"$fixture/locks/build lock"
+flock -n "$held_lock_fd"
+: > "$PODMAN_LOG"
+if bash "$fixture/builder/build-iso" --local checkout; then
+  printf 'Error: Build lock contention was ignored.\n' >&2
   exit 1
 fi
+[[ ! -s "$PODMAN_LOG" ]]
+exec {held_lock_fd}>&-
 
-printf 'BUILD_LOCAL="$(touch %s)"\n' "$fixture/shell-syntax-executed" > "$fixture/synthetic.env"
-printf 'BUILD_JAHITAN_PATH="%s"\n' "$fixture/output root" >> "$fixture/synthetic.env"
-printf 'BUILD_PUBLISH_URL=https://example.invalid\n' >> "$fixture/synthetic.env"
-printf 'BUILD_LOCKFILE="%s"\n' "$fixture/source root/build lock.lock" >> "$fixture/synthetic.env"
-if PODMAN_ENV_FILE="$fixture/synthetic.env" PODMAN_ARGS="$fixture/podman-args" \
-  PATH="$fixture/bin:$PATH" bash "$fixture/builder repo/tools/podman-build-iso.sh" --local checkout; then
-  printf 'Error: Shell expansion was accepted.\n' >&2
+exec {held_cache_fd}>"$fixture/builder/workdir/.package-cache.lock"
+flock -n "$held_cache_fd"
+: > "$PODMAN_LOG"
+if bash "$fixture/builder/build-iso" --local checkout; then exit 1; fi
+if bash "$fixture/builder/purge-iso"; then exit 1; fi
+[[ ! -s "$PODMAN_LOG" ]]
+exec {held_cache_fd}>&-
+
+: > "$PODMAN_LOG"
+if bash "$fixture/builder/purge-iso" unexpected; then exit 1; fi
+[[ ! -s "$PODMAN_LOG" ]]
+bash "$fixture/builder/purge-iso"
+[[ $(<"$PODMAN_LOG") == *'--userns=host'* ]]
+[[ $(<"$PODMAN_LOG") == *"$fixture/builder/workdir:/workdir:rw"* ]]
+[[ $(<"$PODMAN_LOG") == *"$fixture/builder/workdir/.package-cache.lock:/workdir/.package-cache.lock:ro"* ]]
+[[ $(<"$PODMAN_LOG") != *"$fixture/source root"* && $(<"$PODMAN_LOG") != *"$fixture/output root"* && $(<"$PODMAN_LOG") != *synthetic-fixture-token* ]]
+
+: > "$PODMAN_LOG"
+if ROOTFUL=1 bash "$fixture/builder/purge-iso"; then
+  printf 'Error: Rootful Podman was accepted.\n' >&2
   exit 1
 fi
-[[ ! -e "$fixture/shell-syntax-executed" ]]
+[[ ! -s "$PODMAN_LOG" ]]
 
-printf 'BUILD_LOCAL="%s"\n' "$fixture/source root" > "$fixture/synthetic.env"
-printf 'BUILD_JAHITAN_PATH="%s"\n' "$fixture/output root" >> "$fixture/synthetic.env"
-printf 'BUILD_PUBLISH_URL=https://example.invalid\n' >> "$fixture/synthetic.env"
-printf 'BUILD_LOCKFILE="%s/checkout/build-lock"\n' "$fixture/source root" >> "$fixture/synthetic.env"
-if PODMAN_ENV_FILE="$fixture/synthetic.env" PODMAN_ARGS="$fixture/should-not-run" \
-  PATH="$fixture/bin:$PATH" bash "$fixture/builder repo/tools/podman-build-iso.sh" --local checkout; then
-  printf 'Error: Build lock overlapping the local source was accepted.\n' >&2
-  exit 1
-fi
-[[ ! -e "$fixture/should-not-run" ]]
-
-rm -f -- "$fixture/builder repo/workdir"
-mkdir -p "$fixture/builder repo/workdir"
-printf 'BUILD_LOCAL="%s/builder repo"\n' "$fixture" > "$fixture/synthetic.env"
-printf 'BUILD_JAHITAN_PATH="%s"\n' "$fixture/output root" >> "$fixture/synthetic.env"
-printf 'BUILD_PUBLISH_URL=https://example.invalid\n' >> "$fixture/synthetic.env"
-printf 'BUILD_LOCKFILE="%s/builder repo/workdir/build-lock"\n' "$fixture" >> "$fixture/synthetic.env"
-if PODMAN_ENV_FILE="$fixture/synthetic.env" PODMAN_ARGS="$fixture/should-not-run" \
-  PATH="$fixture/bin:$PATH" bash "$fixture/builder repo/tools/podman-build-iso.sh" --remote https://example.invalid/live.git main; then
-  printf 'Error: Workdir build lock was accepted.\n' >&2
-  exit 1
-fi
-[[ ! -e "$fixture/should-not-run" ]]
-
-printf 'Podman wrapper parser checks passed.\n'
+printf 'Direct Podman host entrypoint fixtures passed.\n'

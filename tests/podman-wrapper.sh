@@ -70,7 +70,7 @@ assert {key: value for key, value in payload.items() if key != "text"} == {
 assert "Local build" in payload["text"]
 PY
 : > "$CURL_CONFIG"
-TELEGRAM_BOT_KEY=synthetic-fixture-token bash -c 'source "$1/build-iso"; TELEGRAM_BOT_KEY=synthetic-fixture-token; send_telegram $'"'"'quote " slash \\ newline\nnext'"'"'' bash "$fixture/builder"
+TELEGRAM_BOT_KEY=synthetic-fixture-token bash -c 'source "$1/build-iso"; TELEGRAM_BOT_KEY=synthetic-fixture-token; send_host_telegram $'"'"'quote " slash \\ newline\nnext'"'"'' bash "$fixture/builder"
 python3 - "$CURL_CONFIG" <<'PY'
 import json
 import sys
@@ -80,6 +80,13 @@ fields = dict(line.split(" = ", 1) for line in Path(sys.argv[1]).read_text().spl
 payload = json.loads(json.loads(fields["data"]))
 assert payload["text"] == 'quote &quot; slash \\ newline\nnext'
 PY
+
+for obsolete_state in send_telegram RESULT ACTION COMMIT_URL CLEAN_REPO_URL CURRENT_OUTPUT_UPDATED LOCK_ACQUIRED; do
+  if [[ $(<"$fixture/builder/build-iso") == *"$obsolete_state"* ]]; then
+    printf 'Error: Obsolete build state remains: %s\n' "$obsolete_state" >&2
+    exit 1
+  fi
+done
 
 : > "$PODMAN_LOG"
 bash "$fixture/builder/build-iso" --remote https://example.invalid/live.git main

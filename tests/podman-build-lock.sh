@@ -2,7 +2,6 @@
 set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-bash "$SCRIPT_DIR/tests/podman-wrapper.sh"
 source "$SCRIPT_DIR/build-iso"
 workdir=$(mktemp -d)
 trap 'rm -rf -- "$workdir"' EXIT
@@ -10,7 +9,7 @@ BUILD_LOCKFILE="$workdir/build.lock"
 
 exec {owner_fd}>>"$BUILD_LOCKFILE"
 flock -n "$owner_fd"
-if (BUILDER_CONTAINER=1; BUILD_LOCKFILE="$BUILD_LOCKFILE"; LOCK_ACQUIRED=0; acquire_build_lock); then
+if (BUILDER_CONTAINER=1; BUILD_LOCKFILE="$BUILD_LOCKFILE"; acquire_build_lock); then
   printf 'Error: Advisory lock did not exclude another process.\n' >&2
   exit 1
 fi
@@ -31,7 +30,6 @@ exec {recovery_fd}>&-
   BUILDER_CONTAINER=1
   BUILD_LOCK_HELD=1
   PACKAGE_CACHE_LOCK_HELD=1
-  LOCK_ACQUIRED=0
   BUILD_JAHITAN_PATH="$workdir/output"
   BUILD_SEND_TELEGRAM=0
   cache_saved="$workdir/cache-saved"
@@ -48,7 +46,6 @@ exec {recovery_fd}>&-
   save_package_cache() { : > "$cache_saved"; }
   finalize_build() { : > "$build_finalized"; }
   run_container_build
-  [[ "$LOCK_ACQUIRED" == 0 ]]
   [[ -n "$START" ]]
 )
 [[ -f "$workdir/cache-saved" ]]

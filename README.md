@@ -94,6 +94,27 @@ and, after the container exits, sends the optional notification using curl stdin
 configuration and a JSON payload. Keep the host `.env` restricted and do not
 include it in logs or artifacts.
 
+## Reading the entrypoints
+
+Start with `run_host_podman_build` in `build-iso` rather than reading the file
+from the first line. It coordinates argument validation, configuration loading,
+path checks, locking, image creation, the container build, and the host
+notification. Each phase has its own named function, and Podman options are
+listed one per line.
+
+The container work is separate: `run_namespace_build` sets up the namespaces,
+and `run_container_build` prepares the workspace, runs live-build, and publishes
+artifacts. Its exit cleanup saves downloaded packages and finalizes logs;
+notifications and their credentials remain on the host.
+
+In `purge-iso`, start with `run_host_purge` and `run_container_purge`. The host
+validates configuration and holds the shared cache lock. The container validates
+the cache tree and mounts before removing only the validated package cache;
+an absent cache is a no-op.
+
+The validation guards remain intentionally explicit. Their purpose is to stop
+unsafe requests before filesystem changes, not to complicate the normal flow.
+
 ## Runtime security boundaries
 
 The builder runs as container `0:0` with rootless user mapping, its narrowly
@@ -140,9 +161,7 @@ The manual `gnome` profile uses the upstream mutable `variant-gnome` branch and
 full package archive, so it may expose upstream changes or archive drift and is
 not a pinned reproducible build. The small fixture omits desktop, installer,
 and firmware package lists and uses faster compression. Neither profile boots
-the resulting ISO or verifies its complete package manifest. Legacy Moby
-seccomp-generator tests are offline regression fixtures only; they are not in
-the host or CI runtime path.
+the resulting ISO or verifies its complete package manifest.
 
 Cache and Purge ISO workflows exercise reuse, invalidation, locking, and unsafe
 paths using fixtures. The container image still uses the existing Dockerfile

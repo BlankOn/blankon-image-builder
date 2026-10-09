@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
-bash "$(dirname -- "${BASH_SOURCE[0]}")/seccomp-profile.sh"
-bash "$(dirname -- "${BASH_SOURCE[0]}")/namespace-dispatch.sh"
 fixture_init
 
 assert_build_lock_available() {
@@ -11,7 +9,8 @@ assert_build_lock_available() {
   exec {check_lock_fd}>&-
 }
 
-bash "$scripts_dir/build-iso" --local "$source_dir"
+env -u TELEGRAM_BOT_KEY -u TELEGRAM_BOT_KEY_FILE BUILD_SEND_TELEGRAM=1 \
+  bash "$scripts_dir/build-iso" --local "$source_dir"
 
 output_dir=$(find "$BUILD_JAHITAN_PATH" -mindepth 1 -maxdepth 1 -type d ! -name current -print)
 [[ -n "$output_dir" && -d "$output_dir" ]]
@@ -27,7 +26,7 @@ done
 [[ -f "$BUILD_LOCKFILE" ]]
 [[ ! -s "$BUILD_LOCKFILE" ]]
 assert_build_lock_available
-[[ $(wc -l < "$TEST_CURL_LOG") -eq 1 ]]
+[[ ! -e "$TEST_CURL_LOG" ]]
 (cd -- "$output_dir" && sha256sum -c "$image_name.hybrid.iso.sha256sum")
 [[ $(<"$BUILD_JAHITAN_PATH/current/current.txt") == "$(basename -- "$output_dir")" ]]
 
@@ -38,7 +37,7 @@ fi
 [[ -f "$BUILD_LOCKFILE" ]]
 [[ ! -s "$BUILD_LOCKFILE" ]]
 assert_build_lock_available
-[[ $(wc -l < "$TEST_CURL_LOG") -eq 2 ]]
+[[ ! -e "$TEST_CURL_LOG" ]]
 [[ $(<"$BUILD_JAHITAN_PATH/current/current.txt") == "$(basename -- "$output_dir")" ]]
 
 if FAKE_CURRENT_COPY_FAIL=1 bash "$scripts_dir/build-iso" --local "$source_dir"; then

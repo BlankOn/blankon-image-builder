@@ -16,6 +16,20 @@ bash "$scripts_dir/purge-iso"
 [[ -f .build/config/marker ]]
 [[ -f "$BUILD_JAHITAN_PATH/current/marker" ]]
 
+mkdir -p "$test_root/unrelated-cache-sentinel"
+printf 'keep\n' > "$test_root/unrelated-cache-sentinel/marker"
+VALIDATED_PACKAGE_CACHE="$test_root/unrelated-cache-sentinel" BUILDER_CONTAINER=1 \
+  bash -c '
+    source "$1"
+    VALIDATED_PACKAGE_CACHE=$2
+    validate_package_cache_for_removal
+    remove_package_cache
+    VALIDATED_PACKAGE_CACHE=$2
+    validate_package_cache_for_removal
+    remove_package_cache
+  ' bash "$scripts_dir/purge-iso" "$test_root/unrelated-cache-sentinel"
+[[ -f "$test_root/unrelated-cache-sentinel/marker" ]]
+
 mkdir -p "$test_root/preserved"
 printf 'keep\n' > "$test_root/preserved/marker"
 ln -s "$test_root/preserved" "$cache_root"

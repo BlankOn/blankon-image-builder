@@ -5,7 +5,6 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 
 validate_required_environment() {
   MISSING_VARS=""
-  [[ "${BUILD_SEND_TELEGRAM:-1}" == 0 || -n "${TELEGRAM_BOT_KEY:-}${TELEGRAM_BOT_KEY_FILE:-}" ]] || MISSING_VARS="$MISSING_VARS TELEGRAM_BOT_KEY"
   [[ -z "$BUILD_LOCKFILE" ]] && MISSING_VARS="$MISSING_VARS BUILD_LOCKFILE"
   [[ -z "$BUILD_JAHITAN_PATH" ]] && MISSING_VARS="$MISSING_VARS BUILD_JAHITAN_PATH"
   [[ -z "$BUILD_PUBLISH_URL" ]] && MISSING_VARS="$MISSING_VARS BUILD_PUBLISH_URL"
@@ -41,10 +40,6 @@ prepare_build_tree() {
   IMAGE_NAME="blankon-live-image-$VARIANT-$ARCH"
 }
 
-send_telegram() {
-  send_host_telegram "$1"
-}
-
 cleanup() {
     local exit_status=$?
 
@@ -55,13 +50,6 @@ cleanup() {
         (( exit_status != 0 )) || exit_status=1
     }
     finalize_build
-    if [[ "${BUILD_SEND_TELEGRAM:-1}" != 0 && -n "$BRANCH" && -n "$TODAY" ]]; then
-        if [[ -n "$COMMIT_URL" ]]; then
-            send_telegram "💿 Jahitan harian $TODAY-$TODAY_COUNT [[ revisi <a href=\\\"$COMMIT_URL\\\">$COMMIT</a> ]] dari $REPO_NAME cabang $BRANCH $RESULT. $FAILURE_REASON $ACTION di ${BUILD_PUBLISH_URL}/$TODAY-$TODAY_COUNT/"
-        else
-            send_telegram "💿 Jahitan harian $TODAY-$TODAY_COUNT dari $REPO_NAME cabang $BRANCH $RESULT. $FAILURE_REASON $ACTION di ${BUILD_PUBLISH_URL}/$TODAY-$TODAY_COUNT/"
-        fi
-    fi
     return "$exit_status"
 }
 
@@ -198,7 +186,6 @@ update_current_output() {
         return 1
     fi
 
-    CURRENT_OUTPUT_UPDATED=1
     if ! rm -rf -- "$backup"; then
         echo "Warning: Previous current output remains at $backup" >&2
     fi
@@ -210,24 +197,20 @@ publish_artifacts() {
     for suffix in contents files packages hybrid.iso; do
         if ! cp -v "$IMAGE_NAME.$suffix" "$TARGET_DIR/$IMAGE_NAME.$suffix"; then
             FAILURE_REASON="Error: Failed to publish $IMAGE_NAME.$suffix"
-            RESULT="gagal terbit ❌"
             return 1
         fi
     done
     if ! zsyncmake -u "${BUILD_PUBLISH_URL}/current/$IMAGE_NAME.hybrid.iso" \
         -o "$TARGET_DIR/$IMAGE_NAME.hybrid.iso.zsync" "$TARGET_DIR/$IMAGE_NAME.hybrid.iso"; then
         FAILURE_REASON="Error: Failed to generate zsync metadata"
-        RESULT="gagal terbit ❌"
         return 1
     fi
     if ! sha256sum "$TARGET_DIR/$IMAGE_NAME.hybrid.iso" | sed 's#  .*/#  #' > "$TARGET_DIR/$IMAGE_NAME.hybrid.iso.sha256sum"; then
         FAILURE_REASON="Error: Failed to generate SHA-256 checksum"
-        RESULT="gagal terbit ❌"
         return 1
     fi
     if ! update_current_output; then
         FAILURE_REASON="Error: Failed to update current Jahitan artifacts"
-        RESULT="gagal terbit ❌"
         return 1
     fi
 }
@@ -258,75 +241,47 @@ usage() {
 
 initialize_runtime_state() {
   trap cleanup EXIT
-  RESULT="gagal terbit ❌"
-  ACTION="Log build dapat disimak"
   FAILURE_REASON=""
   LOCAL_SOURCE=""
   REPO=""
   BRANCH=""
   COMMIT=""
   START=""
-  LOCK_ACQUIRED=0
-  CURRENT_OUTPUT_UPDATED=0
-}
-
-validate_host_root() {
-  [[ "$BUILD_LOCAL" == /* ]] || {
-    echo "Error: BUILD_LOCAL must be an absolute directory: $BUILD_LOCAL"
-    exit 2
-  }
-  [[ -d "$BUILD_LOCAL" ]] || {
-    echo "Error: BUILD_LOCAL directory not found: $BUILD_LOCAL"
-    exit 2
-  }
-  if ! BUILD_LOCAL_ROOT=$(realpath -- "$BUILD_LOCAL"); then
-    echo "Error: Cannot canonicalize BUILD_LOCAL: $BUILD_LOCAL"
-    exit 2
-  fi
-  export BUILD_LOCAL="$BUILD_LOCAL_ROOT"
 }
 
 parse_local_source() {
   local source_candidate="$1"
 
-  if [[ -z "$BUILDER_CONTAINER" ]]; then
-    if [[ "$source_candidate" == /* ]]; then
-      SOURCE_CANDIDATE=$source_candidate
-    else
-      SOURCE_CANDIDATE="$BUILD_LOCAL_ROOT/$source_candidate"
-    fi
-    [[ -d "$SOURCE_CANDIDATE" ]] || {
-      echo "Error: Local source directory not found: $SOURCE_CANDIDATE"
-      exit 2
-    }
-    if ! LOCAL_SOURCE=$(realpath -- "$SOURCE_CANDIDATE"); then
-      echo "Error: Cannot canonicalize local source: $SOURCE_CANDIDATE"
-      exit 2
-    fi
-    if [[ "$BUILD_LOCAL_ROOT" != "/" && "$LOCAL_SOURCE" != "$BUILD_LOCAL_ROOT" && "$LOCAL_SOURCE" != "$BUILD_LOCAL_ROOT/"* ]]; then
-      echo "Error: Local source must stay under BUILD_LOCAL: $LOCAL_SOURCE"
-      exit 2
-    fi
-  else
-    [[ "$source_candidate" == /* ]] || { echo "Error: Local source path must be absolute: $source_candidate"; exit 2; }
-    [[ -d "$source_candidate" ]] || { echo "Error: Local source directory not found: $source_candidate"; exit 2; }
-    LOCAL_SOURCE=$source_candidate
+  if [[ "$source_candidate" != /* ]]; then
+    echo "Error: Local source path must be absolute: $source_candidate"
+    exit 2
   fi
+  if [[ ! -d "$source_candidate" ]]; then
+    echo "Error: Local source directory not found: $source_candidate"
+    exit 2
+  fi
+  LOCAL_SOURCE=$source_candidate
 }
 
 parse_arguments() {
-  [[ $# -gt 0 ]] || { usage; exit 2; }
-  MODE=$1
-  if [[ -z "$BUILDER_CONTAINER" ]]; then
-    validate_host_root
+  if [[ $# -eq 0 ]]; then
+    usage
+    exit 2
   fi
+  MODE=$1
   case "$MODE" in
     --local)
-      [[ $# -eq 2 ]] || { usage; exit 2; }
+      if [[ $# -ne 2 ]]; then
+        usage
+        exit 2
+      fi
       parse_local_source "$2"
       ;;
     --remote)
-      [[ $# -ge 3 && $# -le 4 ]] || { usage; exit 2; }
+      if [[ $# -lt 3 || $# -gt 4 ]]; then
+        usage
+        exit 2
+      fi
       REPO=$2
       BRANCH=$3
       COMMIT=${4:-}
@@ -338,108 +293,326 @@ parse_arguments() {
   esac
 }
 
-dispatch_build() {
-  run_container_build
+validate_host_arguments() {
+  case "${1:-}" in
+    --local)
+      if [[ "$#" -ne 2 ]]; then
+        usage >&2
+        return 2
+      fi
+      ;;
+    --remote)
+      if [[ "$#" -lt 3 || "$#" -gt 4 ]]; then
+        usage >&2
+        return 2
+      fi
+      ;;
+    *)
+      usage >&2
+      return 2
+      ;;
+  esac
 }
 
-run_host_podman_build() {
-  local env_file="$SCRIPT_DIR/.env" line name value source_path package_lock host_build_lock canonical_workdir canonical_output notification_message
-  if [[ "$#" -lt 2 || ( "$1" != --local && "$1" != --remote ) || ( "$1" == --local && "$#" -ne 2 ) || ( "$1" == --remote && ( "$#" -lt 3 || "$#" -gt 4 ) ) ]]; then
-    usage >&2
-    return 2
+load_host_configuration() {
+  local env_file="$SCRIPT_DIR/.env" line name value seen_name
+  if [[ ! -f "$env_file" ]]; then
+    echo "Error: Environment file not found: $env_file" >&2
+    return 1
   fi
-  [[ -f "$env_file" ]] || { echo "Error: Environment file not found: $env_file" >&2; return 1; }
   BUILD_LOCAL= BUILD_LOCKFILE= BUILD_JAHITAN_PATH= BUILD_PUBLISH_URL= TELEGRAM_BOT_KEY= BUILD_SEND_TELEGRAM=1
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ "$line" =~ ^[[:space:]]*(BUILD_LOCAL|BUILD_LOCKFILE|BUILD_JAHITAN_PATH|BUILD_PUBLISH_URL|TELEGRAM_BOT_KEY|BUILD_SEND_TELEGRAM)=(.*)$ ]] || continue
-    name=${BASH_REMATCH[1]}; value=${BASH_REMATCH[2]}
-    local seen_name="${name}_SEEN"
-    [[ "${!seen_name:-}" != 1 ]] || { echo "Error: Duplicate $name assignment in .env." >&2; return 1; }
-    printf -v "$seen_name" '%s' 1
-    if [[ "$value" == \"* ]]; then [[ "$value" == *\" ]] || return 1; value=${value:1:${#value}-2};
-    elif [[ "$value" == \'* ]]; then [[ "$value" == *\' ]] || return 1; value=${value:1:${#value}-2}; fi
-    if [[ "$name" == BUILD_PUBLISH_URL ]]; then
-      [[ "$value" =~ ^https?://[A-Za-z0-9._:/-]+$ ]] || { echo 'Error: Unsupported BUILD_PUBLISH_URL syntax in .env.' >&2; return 1; }
-    elif [[ "$name" == TELEGRAM_BOT_KEY ]]; then
-      [[ "$value" =~ ^[A-Za-z0-9:_-]*$ ]] || { echo 'Error: Unsupported TELEGRAM_BOT_KEY syntax in .env.' >&2; return 1; }
-    elif [[ "$name" == BUILD_SEND_TELEGRAM ]]; then
-      [[ "$value" == 0 || "$value" == 1 ]] || { echo 'Error: BUILD_SEND_TELEGRAM must be 0 or 1.' >&2; return 1; }
-    else
-      [[ "$value" =~ ^/[A-Za-z0-9_./[:space:]-]+$ ]] || { echo "Error: Unsupported syntax in $name assignment in .env." >&2; return 1; }
+    name=${BASH_REMATCH[1]}
+    value=${BASH_REMATCH[2]}
+    seen_name="${name}_SEEN"
+    if [[ "${!seen_name:-}" == 1 ]]; then
+      echo "Error: Duplicate $name assignment in .env." >&2
+      return 1
     fi
+    printf -v "$seen_name" '%s' 1
+    if [[ "$value" == \"* ]]; then
+      [[ "$value" == *\" ]] || return 1
+      value=${value:1:${#value}-2}
+    elif [[ "$value" == \'* ]]; then
+      [[ "$value" == *\' ]] || return 1
+      value=${value:1:${#value}-2}
+    fi
+    case "$name" in
+      BUILD_PUBLISH_URL)
+        if [[ ! "$value" =~ ^https?://[A-Za-z0-9._:/-]+$ ]]; then
+          echo 'Error: Unsupported BUILD_PUBLISH_URL syntax in .env.' >&2
+          return 1
+        fi
+        ;;
+      TELEGRAM_BOT_KEY)
+        if [[ ! "$value" =~ ^[A-Za-z0-9:_-]*$ ]]; then
+          echo 'Error: Unsupported TELEGRAM_BOT_KEY syntax in .env.' >&2
+          return 1
+        fi
+        ;;
+      BUILD_SEND_TELEGRAM)
+        if [[ "$value" != 0 && "$value" != 1 ]]; then
+          echo 'Error: BUILD_SEND_TELEGRAM must be 0 or 1.' >&2
+          return 1
+        fi
+        ;;
+      *)
+        if [[ ! "$value" =~ ^/[A-Za-z0-9_./[:space:]-]+$ ]]; then
+          echo "Error: Unsupported syntax in $name assignment in .env." >&2
+          return 1
+        fi
+        ;;
+    esac
     printf -v "$name" '%s' "$value"
   done < "$env_file"
   export -n TELEGRAM_BOT_KEY TELEGRAM_BOT_KEY_FILE 2>/dev/null || true
-  [[ "$BUILD_SEND_TELEGRAM" == 0 || -n "$TELEGRAM_BOT_KEY" ]] || { echo 'Error: TELEGRAM_BOT_KEY is required when notifications are enabled.' >&2; return 1; }
-  [[ "$BUILD_LOCAL" == /* && -d "$BUILD_LOCAL" && "$BUILD_LOCKFILE" == /* && "$BUILD_JAHITAN_PATH" == /* && "$BUILD_PUBLISH_URL" =~ ^https?://[A-Za-z0-9._:/-]+$ ]] || { echo 'Error: Invalid build configuration.' >&2; return 1; }
+}
+
+validate_host_configuration() {
+  if [[ "$BUILD_SEND_TELEGRAM" != 0 && -z "$TELEGRAM_BOT_KEY" ]]; then
+    echo 'Error: TELEGRAM_BOT_KEY is required when notifications are enabled.' >&2
+    return 1
+  fi
+  if [[ "$BUILD_LOCAL" != /* || ! -d "$BUILD_LOCAL" || "$BUILD_LOCKFILE" != /* || \
+        "$BUILD_JAHITAN_PATH" != /* || ! "$BUILD_PUBLISH_URL" =~ ^https?://[A-Za-z0-9._:/-]+$ ]]; then
+    echo 'Error: Invalid build configuration.' >&2
+    return 1
+  fi
   SCRIPT_DIR=$(realpath -- "$SCRIPT_DIR") || return 1
   BUILD_LOCAL=$(realpath -- "$BUILD_LOCAL") || return 1
-  [[ "$BUILD_LOCAL" != / ]] || { echo 'Error: BUILD_LOCAL cannot be the filesystem root.' >&2; return 1; }
-  command -v podman >/dev/null 2>&1 || { echo 'Error: Podman is required.' >&2; return 1; }
-  [[ "$(env -u TELEGRAM_BOT_KEY -u TELEGRAM_BOT_KEY_FILE podman info --format '{{.Host.Security.Rootless}}')" == true ]] || { echo 'Error: A rootless Podman engine is required.' >&2; return 1; }
-  source_path=
-  [[ "$1" != --local ]] || { source_path=$2; [[ "$source_path" == /* ]] || source_path="$BUILD_LOCAL/$source_path"; }
-  [[ ! -L "$SCRIPT_DIR/workdir" ]] || { echo 'Error: workdir cannot be a symlink.' >&2; return 1; }
+  if [[ "$BUILD_LOCAL" == / ]]; then
+    echo 'Error: BUILD_LOCAL cannot be the filesystem root.' >&2
+    return 1
+  fi
+  if ! command -v podman >/dev/null 2>&1; then
+    echo 'Error: Podman is required.' >&2
+    return 1
+  fi
+  if [[ "$(env -u TELEGRAM_BOT_KEY -u TELEGRAM_BOT_KEY_FILE podman info --format '{{.Host.Security.Rootless}}')" != true ]]; then
+    echo 'Error: A rootless Podman engine is required.' >&2
+    return 1
+  fi
+}
+
+paths_overlap() {
+  [[ "$1" == "$2" || "$1" == "$2/"* || "$2" == "$1/"* || "$1" == / || "$2" == / ]]
+}
+
+validate_host_paths() {
+  local mode="$1" source_path="" canonical_workdir canonical_output host_build_lock protected_path
+  if [[ "$mode" == --local ]]; then
+    source_path=$2
+    [[ "$source_path" == /* ]] || source_path="$BUILD_LOCAL/$source_path"
+  fi
+  if [[ -L "$SCRIPT_DIR/workdir" ]]; then
+    echo 'Error: workdir cannot be a symlink.' >&2
+    return 1
+  fi
   canonical_workdir=$(realpath -m -- "$SCRIPT_DIR/workdir") || return 1
   canonical_output=$(realpath -m -- "$BUILD_JAHITAN_PATH") || return 1
-  [[ "$canonical_output" != / ]] || { echo 'Error: Output cannot be the filesystem root.' >&2; return 1; }
-  BUILD_JAHITAN_PATH=$canonical_output
-  paths_overlap() {
-    [[ "$1" == "$2" || "$1" == "$2/"* || "$2" == "$1/"* || "$1" == / || "$2" == / ]]
-  }
-  [[ "$BUILD_JAHITAN_PATH" != "$BUILD_LOCAL" && "$BUILD_LOCAL" != "$BUILD_JAHITAN_PATH/"* ]] || { echo 'Error: Output cannot equal or contain BUILD_LOCAL.' >&2; return 1; }
-  if [[ "$1" == --local ]]; then
-    source_path=$2; [[ "$source_path" == /* ]] || source_path="$BUILD_LOCAL/$source_path"
-    [[ -d "$source_path" ]] || { echo 'Error: Local source directory not found.' >&2; return 1; }
-    source_path=$(realpath -- "$source_path")
-    [[ "$source_path" == "$BUILD_LOCAL" || "$source_path" == "$BUILD_LOCAL/"* ]] || { echo 'Error: Local source must stay under BUILD_LOCAL.' >&2; return 1; }
-    if paths_overlap "$source_path" "$SCRIPT_DIR"; then echo 'Error: Local source overlaps builder checkout.' >&2; return 1; fi
-    if paths_overlap "$BUILD_JAHITAN_PATH" "$source_path"; then echo 'Error: Output and source paths overlap.' >&2; return 1; fi
+  if [[ "$canonical_output" == / ]]; then
+    echo 'Error: Output cannot be the filesystem root.' >&2
+    return 1
   fi
-  if paths_overlap "$BUILD_JAHITAN_PATH" "$SCRIPT_DIR" || paths_overlap "$BUILD_JAHITAN_PATH" "$canonical_workdir"; then echo 'Error: Output overlaps builder checkout or workdir.' >&2; return 1; fi
-   [[ ! -L "$BUILD_LOCKFILE" ]] || { echo 'Error: Build lockfile cannot be a symlink.' >&2; return 1; }
-  host_build_lock=$(dirname -- "$BUILD_LOCKFILE"); [[ -d "$host_build_lock" ]] || { echo 'Error: Build lock parent must exist.' >&2; return 1; }
-  host_build_lock=$(realpath -- "$host_build_lock"); BUILD_LOCKFILE="$host_build_lock/$(basename -- "$BUILD_LOCKFILE")"
-  [[ -w "$host_build_lock" && ( ! -e "$BUILD_LOCKFILE" || ( -f "$BUILD_LOCKFILE" && -w "$BUILD_LOCKFILE" ) ) ]] || { echo 'Error: Build lock path is not writable or is not a regular file.' >&2; return 1; }
-   for protected_path in "$SCRIPT_DIR" "$canonical_workdir" "$BUILD_JAHITAN_PATH" "$source_path"; do
+  BUILD_JAHITAN_PATH=$canonical_output
+  if [[ "$BUILD_JAHITAN_PATH" == "$BUILD_LOCAL" || "$BUILD_LOCAL" == "$BUILD_JAHITAN_PATH/"* ]]; then
+    echo 'Error: Output cannot equal or contain BUILD_LOCAL.' >&2
+    return 1
+  fi
+  if [[ "$mode" == --local ]]; then
+    if [[ ! -d "$source_path" ]]; then
+      echo 'Error: Local source directory not found.' >&2
+      return 1
+    fi
+    source_path=$(realpath -- "$source_path") || return 1
+    if [[ "$source_path" != "$BUILD_LOCAL" && "$source_path" != "$BUILD_LOCAL/"* ]]; then
+      echo 'Error: Local source must stay under BUILD_LOCAL.' >&2
+      return 1
+    fi
+    if paths_overlap "$source_path" "$SCRIPT_DIR"; then
+      echo 'Error: Local source overlaps builder checkout.' >&2
+      return 1
+    fi
+    if paths_overlap "$BUILD_JAHITAN_PATH" "$source_path"; then
+      echo 'Error: Output and source paths overlap.' >&2
+      return 1
+    fi
+  fi
+  if paths_overlap "$BUILD_JAHITAN_PATH" "$SCRIPT_DIR" || paths_overlap "$BUILD_JAHITAN_PATH" "$canonical_workdir"; then
+    echo 'Error: Output overlaps builder checkout or workdir.' >&2
+    return 1
+  fi
+  if [[ -L "$BUILD_LOCKFILE" ]]; then
+    echo 'Error: Build lockfile cannot be a symlink.' >&2
+    return 1
+  fi
+  host_build_lock=$(dirname -- "$BUILD_LOCKFILE")
+  if [[ ! -d "$host_build_lock" ]]; then
+    echo 'Error: Build lock parent must exist.' >&2
+    return 1
+  fi
+  host_build_lock=$(realpath -- "$host_build_lock") || return 1
+  BUILD_LOCKFILE="$host_build_lock/$(basename -- "$BUILD_LOCKFILE")"
+  if [[ ! -w "$host_build_lock" || ( -e "$BUILD_LOCKFILE" && ( ! -f "$BUILD_LOCKFILE" || ! -w "$BUILD_LOCKFILE" ) ) ]]; then
+    echo 'Error: Build lock path is not writable or is not a regular file.' >&2
+    return 1
+  fi
+  for protected_path in "$SCRIPT_DIR" "$canonical_workdir" "$BUILD_JAHITAN_PATH" "$source_path"; do
     [[ -n "$protected_path" ]] || continue
-    if paths_overlap "$BUILD_LOCKFILE" "$protected_path"; then echo 'Error: Build lockfile overlaps a protected path.' >&2; return 1; fi
+    if paths_overlap "$BUILD_LOCKFILE" "$protected_path"; then
+      echo 'Error: Build lockfile overlaps a protected path.' >&2
+      return 1
+    fi
   done
-  [[ ! -e "$canonical_workdir" || ( -d "$canonical_workdir" && -w "$canonical_workdir" ) ]] || { echo 'Error: workdir is not writable or is not a directory.' >&2; return 1; }
-  [[ ! -e "$BUILD_JAHITAN_PATH" || ( -d "$BUILD_JAHITAN_PATH" && -w "$BUILD_JAHITAN_PATH" ) ]] || { echo 'Error: Output is not writable or is not a directory.' >&2; return 1; }
-  exec {BUILD_LOCK_FD}>>"$BUILD_LOCKFILE" || { echo 'Error: Cannot open build lockfile.' >&2; return 1; }
-  flock -n "$BUILD_LOCK_FD" || { echo 'Error: Build is already in progress.' >&2; return 1; }
-  package_lock="$canonical_workdir/.package-cache.lock"
-  [[ ! -L "$package_lock" && ( ! -e "$package_lock" || -f "$package_lock" ) ]] || { echo 'Error: Package-cache lock must be a regular non-symlink file.' >&2; return 1; }
-  mkdir -p -- "$canonical_workdir" || return 1
-  [[ ! -L "$package_lock" && ( ! -e "$package_lock" || -f "$package_lock" ) ]] || { echo 'Error: Package-cache lock must be a regular non-symlink file.' >&2; return 1; }
-  if [[ ! -e "$package_lock" ]]; then ( set -o noclobber; : > "$package_lock" ) 2>/dev/null || return 1; fi
-  exec {PACKAGE_LOCK_FD}>>"$package_lock" || { echo 'Error: Cannot open package-cache lock.' >&2; return 1; }
-  flock -n "$PACKAGE_LOCK_FD" || { echo 'Error: Package cache is in use by another build or purge.' >&2; return 1; }
-  mkdir -p -- "$BUILD_JAHITAN_PATH" || return 1
-  env -u TELEGRAM_BOT_KEY -u TELEGRAM_BOT_KEY_FILE podman build --tag blankon-image-builder:podman --file "$SCRIPT_DIR/Dockerfile" "$SCRIPT_DIR" || return 1
-  local container_build_local=/workdir
-  [[ -z "$source_path" ]] || container_build_local=$source_path
-  local -a args=(run --rm --userns=host --user 0:0 --cap-add=SYS_ADMIN --security-opt 'unmask=/proc/*' --workdir /workdir --volume "$SCRIPT_DIR/workdir:/workdir:rw" --volume "$package_lock:/workdir/.package-cache.lock:ro" --volume "$BUILD_JAHITAN_PATH:$BUILD_JAHITAN_PATH:rw" --env BUILDER_CONTAINER=1 --env PODMAN_MODE=1 --env BUILD_SEND_TELEGRAM=0 --env "BUILD_LOCAL=$container_build_local" --env "BUILD_JAHITAN_PATH=$BUILD_JAHITAN_PATH" --env "BUILD_PUBLISH_URL=$BUILD_PUBLISH_URL" --env BUILD_LOCK_HELD=1 --env PACKAGE_CACHE_LOCK_HELD=1)
-  if [[ -n "$source_path" ]]; then args+=(--volume "$source_path:$source_path:ro"); fi
-  args+=(blankon-image-builder:podman /usr/local/bin/build-iso --namespace-build "$1")
-  if [[ "$1" == --local ]]; then args+=("$source_path"); else args+=("${@:2}"); fi
-  local build_status=0
+  if [[ -e "$canonical_workdir" && ( ! -d "$canonical_workdir" || ! -w "$canonical_workdir" ) ]]; then
+    echo 'Error: workdir is not writable or is not a directory.' >&2
+    return 1
+  fi
+  if [[ -e "$BUILD_JAHITAN_PATH" && ( ! -d "$BUILD_JAHITAN_PATH" || ! -w "$BUILD_JAHITAN_PATH" ) ]]; then
+    echo 'Error: Output is not writable or is not a directory.' >&2
+    return 1
+  fi
+  HOST_SOURCE_PATH=$source_path
+  HOST_WORKDIR=$canonical_workdir
+}
+
+acquire_host_locks() {
+  local package_lock="$HOST_WORKDIR/.package-cache.lock"
+  if ! exec {BUILD_LOCK_FD}>>"$BUILD_LOCKFILE"; then
+    echo 'Error: Cannot open build lockfile.' >&2
+    return 1
+  fi
+  if ! flock -n "$BUILD_LOCK_FD"; then
+    echo 'Error: Build is already in progress.' >&2
+    return 1
+  fi
+  if [[ -L "$package_lock" || ( -e "$package_lock" && ! -f "$package_lock" ) ]]; then
+    echo 'Error: Package-cache lock must be a regular non-symlink file.' >&2
+    return 1
+  fi
+  mkdir -p -- "$HOST_WORKDIR" || return 1
+  if [[ -L "$package_lock" || ( -e "$package_lock" && ! -f "$package_lock" ) ]]; then
+    echo 'Error: Package-cache lock must be a regular non-symlink file.' >&2
+    return 1
+  fi
+  if [[ ! -e "$package_lock" ]]; then
+    ( set -o noclobber; : > "$package_lock" ) 2>/dev/null || return 1
+  fi
+  if ! exec {PACKAGE_LOCK_FD}>>"$package_lock"; then
+    echo 'Error: Cannot open package-cache lock.' >&2
+    return 1
+  fi
+  if ! flock -n "$PACKAGE_LOCK_FD"; then
+    echo 'Error: Package cache is in use by another build or purge.' >&2
+    return 1
+  fi
+}
+
+build_builder_image() {
+  env -u TELEGRAM_BOT_KEY -u TELEGRAM_BOT_KEY_FILE podman build \
+    --tag blankon-image-builder:podman \
+    --file "$SCRIPT_DIR/Dockerfile" "$SCRIPT_DIR"
+}
+
+run_podman_build() {
+  local mode="$1" build_status=0 container_build_local=/workdir
+  shift
+  [[ -z "$HOST_SOURCE_PATH" ]] || container_build_local=$HOST_SOURCE_PATH
+  local -a args=(
+    run --rm
+    --userns=host
+    --user 0:0
+    --cap-add=SYS_ADMIN
+    --security-opt 'unmask=/proc/*'
+    --workdir /workdir
+    --volume "$SCRIPT_DIR/workdir:/workdir:rw"
+    --volume "$HOST_WORKDIR/.package-cache.lock:/workdir/.package-cache.lock:ro"
+    --volume "$BUILD_JAHITAN_PATH:$BUILD_JAHITAN_PATH:rw"
+    --env BUILDER_CONTAINER=1
+    --env PODMAN_MODE=1
+    --env BUILD_SEND_TELEGRAM=0
+    --env "BUILD_LOCAL=$container_build_local"
+    --env "BUILD_JAHITAN_PATH=$BUILD_JAHITAN_PATH"
+    --env "BUILD_PUBLISH_URL=$BUILD_PUBLISH_URL"
+    --env BUILD_LOCK_HELD=1
+    --env PACKAGE_CACHE_LOCK_HELD=1
+  )
+  if [[ -n "$HOST_SOURCE_PATH" ]]; then
+    args+=(--volume "$HOST_SOURCE_PATH:$HOST_SOURCE_PATH:ro")
+  fi
+  args+=(blankon-image-builder:podman /usr/local/bin/build-iso --namespace-build "$mode")
+  if [[ "$mode" == --local ]]; then
+    args+=("$HOST_SOURCE_PATH")
+  else
+    args+=("$@")
+  fi
   env -u TELEGRAM_BOT_KEY -u TELEGRAM_BOT_KEY_FILE podman "${args[@]}" || build_status=$?
+  return "$build_status"
+}
+
+notify_host_build_result() {
+  local mode="$1" build_status="$2" message notification_status=0
+  shift 2
   if [[ "$BUILD_SEND_TELEGRAM" != 0 ]]; then
-    local notification_message notification_status=0
-    if [[ "$1" == --local ]]; then notification_message="Local build ${source_path} at ${BUILD_PUBLISH_URL} status $([[ $build_status == 0 ]] && printf success || printf failure)"; else notification_message="Remote build $2 branch $3 commit ${4:-unspecified} at ${BUILD_PUBLISH_URL} status $([[ $build_status == 0 ]] && printf success || printf failure)"; fi
-    send_host_telegram "$notification_message" || notification_status=$?
-    (( notification_status == 0 )) || { echo 'Error: Build notification failed.' >&2; (( build_status != 0 )) || build_status=1; }
+    local build_result=success
+    (( build_status == 0 )) || build_result=failure
+    if [[ "$mode" == --local ]]; then
+      message="Local build ${HOST_SOURCE_PATH} at ${BUILD_PUBLISH_URL} status $build_result"
+    else
+      message="Remote build $1 branch $2 commit ${3:-unspecified} at ${BUILD_PUBLISH_URL} status $build_result"
+    fi
+    send_host_telegram "$message" || notification_status=$?
+    if (( notification_status != 0 )); then
+      echo 'Error: Build notification failed.' >&2
+      if (( build_status == 0 )); then
+        build_status=1
+      fi
+    fi
   fi
   return "$build_status"
+}
+
+run_host_podman_build() {
+  validate_host_arguments "$@" || return $?
+  load_host_configuration || return $?
+  validate_host_configuration || return $?
+  validate_host_paths "$@" || return $?
+  acquire_host_locks || return $?
+  if ! mkdir -p -- "$BUILD_JAHITAN_PATH"; then
+    return 1
+  fi
+  build_builder_image || return $?
+  local mode="$1" build_status=0
+  shift
+  run_podman_build "$mode" "$@" || build_status=$?
+  notify_host_build_result "$mode" "$build_status" "$@"
 }
 
 send_host_telegram() {
   local message="$1" token
   token=$TELEGRAM_BOT_KEY
   [[ -n "$token" ]] || return 1
-  printf '%s\n%s' "$token" "$message" | python3 -c 'import html,json,sys; token=sys.stdin.readline().rstrip("\n"); message=html.escape(sys.stdin.read(), quote=True); payload={"chat_id":"-1001067745576","message_thread_id":51909,"parse_mode":"HTML","disable_web_page_preview":True,"text":message,"disable_notification":True}; print("url = "+json.dumps("https://api.telegram.org/bot"+token+"/sendMessage")); print("request = \"POST\""); print("header = \"Content-Type: application/json\""); print("data = "+json.dumps(json.dumps(payload)))' | env -u TELEGRAM_BOT_KEY -u TELEGRAM_BOT_KEY_FILE curl --silent --fail --output /dev/null --config - 2>/dev/null
+  printf '%s\n%s' "$token" "$message" | python3 -c '
+import html
+import json
+import sys
+
+token = sys.stdin.readline().rstrip("\n")
+message = html.escape(sys.stdin.read(), quote=True)
+payload = {
+    "chat_id": "-1001067745576",
+    "message_thread_id": 51909,
+    "parse_mode": "HTML",
+    "disable_web_page_preview": True,
+    "text": message,
+    "disable_notification": True,
+}
+print("url = " + json.dumps("https://api.telegram.org/bot" + token + "/sendMessage"))
+print("request = \"POST\"")
+print("header = \"Content-Type: application/json\"")
+print("data = " + json.dumps(json.dumps(payload)))
+' | env -u TELEGRAM_BOT_KEY -u TELEGRAM_BOT_KEY_FILE curl --silent --fail --output /dev/null --config - 2>/dev/null
 }
 
 acquire_build_lock() {
@@ -447,7 +620,6 @@ acquire_build_lock() {
   [[ ! -L "$BUILD_LOCKFILE" ]] || { echo "Error: Build lockfile cannot be a symlink: $BUILD_LOCKFILE" >&2; exit 1; }
   exec {BUILD_LOCK_FD}>>"$BUILD_LOCKFILE" || { echo "Error: Cannot open build lockfile: $BUILD_LOCKFILE" >&2; exit 1; }
   flock -n "$BUILD_LOCK_FD" || { echo "Error: Build is already in progress" >&2; exit 1; }
-  LOCK_ACQUIRED=1
 }
 
 prepare_output_directory() {
@@ -527,8 +699,6 @@ prepare_remote_source() {
   fi
 
   COMMIT=$(git -C "./tmp/$TODAY-$TODAY_COUNT" rev-parse --short HEAD)
-  CLEAN_REPO_URL=$(echo "$REPO" | sed 's/\.git$//')
-  COMMIT_URL="$CLEAN_REPO_URL/commit/$COMMIT"
 }
 
 build_remote_image() {
@@ -566,8 +736,6 @@ build_image() {
     exit 1
   fi
 
-  RESULT="telah terbit ✅"
-  ACTION="Berkas citra dapat diunduh"
   publish_artifacts || exit 1
 }
 
@@ -618,7 +786,7 @@ main() {
   validate_required_environment || exit 1
   initialize_runtime_state
   parse_arguments "$@"
-  dispatch_build "$@"
+  run_container_build
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

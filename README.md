@@ -63,7 +63,7 @@ Remote mode clones a repository branch and can pin a commit:
 
 ```sh
 ./build-iso --remote <repo> <branch> [commit]
-./build-iso --remote https://github.com/BlankOn/blankon-live-build.git dummy-sinambung <sha>
+./build-iso --remote https://github.com/BlankOn/blankon-live-build.git sinambung-dummy <sha>
 ```
 
 Outputs include date-stamped ISO, checksum, zsync metadata, logs, and a

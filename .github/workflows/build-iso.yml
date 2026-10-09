@@ -9,9 +9,9 @@ on:
         description: ISO source profile
         type: choice
         required: true
-        default: dummy-sinambung
+        default: sinambung-dummy
         options:
-          - dummy-sinambung
+          - sinambung-dummy
           - gnome
 
 permissions:
@@ -43,6 +43,7 @@ jobs:
           bash tests/purge.sh
           bash tests/podman-wrapper.sh
           bash tests/podman-build-lock.sh
+          bash tests/iso-acceptance.sh
           python3 tests/patch-live-build-sysfs.py
           test -x build-iso
           test -x purge-iso
@@ -59,13 +60,13 @@ jobs:
       - name: Resolve and validate live-build source
         id: source
         env:
-          PROFILE: ${{ inputs.profile || 'dummy-sinambung' }}
+          PROFILE: ${{ inputs.profile || 'sinambung-dummy' }}
         run: |
           set -euo pipefail
           source_repo=https://github.com/BlankOn/blankon-live-build.git
           case "$PROFILE" in
-            dummy-sinambung)
-              source_branch=dummy-sinambung
+            sinambung-dummy)
+              source_branch=sinambung-dummy
               expected_variant=ci
               ;;
             gnome)
@@ -95,9 +96,9 @@ jobs:
       fail-fast: false
       matrix:
         mode: [local, remote]
-    name: Build ISO (${{ matrix.mode }}, ${{ inputs.profile || 'dummy-sinambung' }})
+    name: Build ISO (${{ matrix.mode }}, ${{ inputs.profile || 'sinambung-dummy' }})
     env:
-      ISO_PROFILE: ${{ inputs.profile || 'dummy-sinambung' }}
+      ISO_PROFILE: ${{ inputs.profile || 'sinambung-dummy' }}
       LIVE_BUILD_REPO: ${{ needs.resolve-source.outputs.repo }}
       LIVE_BUILD_BRANCH: ${{ needs.resolve-source.outputs.branch }}
       LIVE_BUILD_SHA: ${{ needs.resolve-source.outputs.sha }}
@@ -112,6 +113,9 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y podman uidmap slirp4netns fuse-overlayfs
+          if [[ "$ISO_PROFILE" == sinambung-dummy ]]; then
+            sudo apt-get install -y xorriso squashfs-tools qemu-system-x86
+          fi
           podman info --format '{{.Host.Security.Rootless}}' | grep -qx true
 
       - name: Free disk space for the GNOME image
@@ -152,7 +156,7 @@ jobs:
             printf 'BUILD_JAHITAN_PATH=%s\n' "$RUNNER_TEMP/blankon-ci-jahitan"
             printf 'BUILD_PUBLISH_URL=%s\n' 'https://example.invalid/iso'
           } > .env
-      - name: Build real ${{ matrix.mode }} ${{ inputs.profile || 'dummy-sinambung' }} ISO
+      - name: Build real ${{ matrix.mode }} ${{ inputs.profile || 'sinambung-dummy' }} ISO
         run: |
           set -euo pipefail
           for attempt in 1 2 3; do
@@ -195,6 +199,15 @@ jobs:
             test "$(stat -c '%u:%g' "$path")" = "$expected_owner"
           done
           df -h /
+
+      - name: Verify ISO structure and BIOS live boot
+        if: ${{ (inputs.profile || 'sinambung-dummy') == 'sinambung-dummy' }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          isos=("$RUNNER_TEMP"/blankon-ci-jahitan/[0-9]*-[0-9]*/*.hybrid.iso)
+          test "${#isos[@]}" -eq 1
+          bash tests/e2e/verify-iso-acceptance.sh "${isos[0]}"
 
       - name: Verify real package cache restore
         if: ${{ inputs.profile != 'gnome' }}

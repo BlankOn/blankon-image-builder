@@ -18,6 +18,10 @@ Run as the user owning the rootless Podman engine. Verify with
 install/configure Podman, edit subordinate-ID files, or alter global host
 configuration.
 
+The image build automatically applies the live-build sysfs compatibility patch.
+Users do not need to run the helper or patch their host; rootless Podman's host
+requirements still need to be satisfied.
+
 Keep the builder and live-build checkouts as siblings beneath `BUILD_LOCAL`:
 
 ```text

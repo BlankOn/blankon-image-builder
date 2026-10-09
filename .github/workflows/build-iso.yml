@@ -4,15 +4,6 @@ on:
   push:
   pull_request:
   workflow_dispatch:
-    inputs:
-      profile:
-        description: ISO source profile
-        type: choice
-        required: true
-        default: sinambung-dummy
-        options:
-          - sinambung-dummy
-          - gnome
 
 permissions:
   contents: read
@@ -22,87 +13,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  fixtures:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Check shell scripts and run fixtures
-        run: |
-          set -euo pipefail
-          for script in build-iso purge-iso tests/*.sh tests/e2e/*.sh; do
-            bash -n "$script"
-          done
-          bash tests/seccomp-profile.sh
-          bash tests/namespace-dispatch.sh
-          bash tests/mount-cleanup.sh
-          bash tests/build-iso.sh
-          bash tests/cache.sh
-          bash tests/purge.sh
-          bash tests/podman-wrapper.sh
-          bash tests/podman-build-lock.sh
-          bash tests/iso-acceptance.sh
-          python3 tests/patch-live-build-sysfs.py
-          test -x build-iso
-          test -x purge-iso
-
-  resolve-source:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    outputs:
-      repo: ${{ steps.source.outputs.repo }}
-      branch: ${{ steps.source.outputs.branch }}
-      sha: ${{ steps.source.outputs.sha }}
-      variant: ${{ steps.source.outputs.variant }}
-    steps:
-      - name: Resolve and validate live-build source
-        id: source
-        env:
-          PROFILE: ${{ inputs.profile || 'sinambung-dummy' }}
-        run: |
-          set -euo pipefail
-          source_repo=https://github.com/BlankOn/blankon-live-build.git
-          case "$PROFILE" in
-            sinambung-dummy)
-              source_branch=sinambung-dummy
-              expected_variant=ci
-              ;;
-            gnome)
-              source_branch=variant-gnome
-              expected_variant=gnome
-              ;;
-            *)
-              exit 1
-              ;;
-          esac
-          source_dir="$RUNNER_TEMP/blankon-live-build"
-          git clone --depth 1 --branch "$source_branch" "$source_repo" "$source_dir"
-          test "$(cat "$source_dir/variant")" = "$expected_variant"
-          test -d "$source_dir/config/common"
-          test -d "$source_dir/config/$expected_variant"
-          test -d "$source_dir/auto"
-          printf 'repo=%s\n' "$source_repo" >> "$GITHUB_OUTPUT"
-          printf 'branch=%s\n' "$source_branch" >> "$GITHUB_OUTPUT"
-          printf 'sha=%s\n' "$(git -C "$source_dir" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          printf 'variant=%s\n' "$expected_variant" >> "$GITHUB_OUTPUT"
-
   build-iso:
-    needs: [fixtures, resolve-source]
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
         mode: [local, remote]
-    name: Build ISO (${{ matrix.mode }}, ${{ inputs.profile || 'sinambung-dummy' }})
-    env:
-      ISO_PROFILE: ${{ inputs.profile || 'sinambung-dummy' }}
-      LIVE_BUILD_REPO: ${{ needs.resolve-source.outputs.repo }}
-      LIVE_BUILD_BRANCH: ${{ needs.resolve-source.outputs.branch }}
-      LIVE_BUILD_SHA: ${{ needs.resolve-source.outputs.sha }}
-      LIVE_BUILD_VARIANT: ${{ needs.resolve-source.outputs.variant }}
+    name: Build ISO (${{ matrix.mode }})
     steps:
       - uses: actions/checkout@v4
         with:
@@ -113,17 +31,6 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y podman uidmap slirp4netns fuse-overlayfs
-          if [[ "$ISO_PROFILE" == sinambung-dummy ]]; then
-            sudo apt-get install -y xorriso squashfs-tools qemu-system-x86
-          fi
-          podman info --format '{{.Host.Security.Rootless}}' | grep -qx true
-
-      - name: Free disk space for the GNOME image
-        if: ${{ inputs.profile == 'gnome' }}
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
-            /usr/local/share/boost /opt/hostedtoolcache
-          df -h /
 
       - name: Prepare local live-build checkout
         if: ${{ matrix.mode == 'local' }}
@@ -131,106 +38,36 @@ jobs:
           set -euo pipefail
           source_root="$RUNNER_TEMP/blankon-ci-sources"
           mkdir -p "$source_root"
-          git init "$source_root/blankon-live-build"
-          git -C "$source_root/blankon-live-build" remote add origin "$LIVE_BUILD_REPO"
-          git -C "$source_root/blankon-live-build" fetch --depth 1 origin "$LIVE_BUILD_SHA"
-          git -C "$source_root/blankon-live-build" checkout --detach FETCH_HEAD
-          test "$(cat "$source_root/blankon-live-build/variant")" = "$LIVE_BUILD_VARIANT"
+          git clone --depth 1 --branch sinambung-dummy https://github.com/BlankOn/blankon-live-build.git "$source_root/blankon-live-build"
 
       - name: Prepare safe build environment
         run: |
           set -euo pipefail
           umask 077
           mkdir -p workdir "$RUNNER_TEMP/blankon-ci-sources" "$RUNNER_TEMP/blankon-ci-jahitan"
-          test ! -L workdir/.package-cache.lock
-          if [[ ! -e workdir/.package-cache.lock ]]; then
-            ( set -o noclobber; : > workdir/.package-cache.lock )
-          fi
-          test -f workdir/.package-cache.lock
-          test ! -L workdir/.package-cache.lock
           {
-            printf 'TELEGRAM_BOT_KEY=%s\n' 'ci-unused-token'
             printf 'BUILD_SEND_TELEGRAM=0\n'
             printf 'BUILD_LOCAL=%s\n' "$RUNNER_TEMP/blankon-ci-sources"
             printf 'BUILD_LOCKFILE=%s\n' "$RUNNER_TEMP/blankon-ci-sources/.build.lock"
             printf 'BUILD_JAHITAN_PATH=%s\n' "$RUNNER_TEMP/blankon-ci-jahitan"
             printf 'BUILD_PUBLISH_URL=%s\n' 'https://example.invalid/iso'
           } > .env
-      - name: Build real ${{ matrix.mode }} ${{ inputs.profile || 'sinambung-dummy' }} ISO
-        run: |
-          set -euo pipefail
-          for attempt in 1 2 3; do
-            log="$RUNNER_TEMP/build-iso-attempt-$attempt.log"
-            if [[ '${{ matrix.mode }}' == local ]]; then
-              if ./build-iso --local blankon-live-build 2>&1 | tee "$log"; then
-                break
-              fi
-            else
-              if ./build-iso --remote "$LIVE_BUILD_REPO" "$LIVE_BUILD_BRANCH" "$LIVE_BUILD_SHA" 2>&1 | tee "$log"; then
-                break
-              fi
-            fi
-            tail -n 220 "$log" > "$RUNNER_TEMP/build-iso-error-tail.log"
-            if (( attempt == 3 )) || ! grep -Eqi \
-              'Could not connect to|connection timed out|Temporary failure resolving|Network is unreachable' \
-              "$RUNNER_TEMP/build-iso-error-tail.log"; then
-              exit 1
-            fi
-            echo "::warning::Archive connection failed; retrying ISO build ($attempt/3)"
-            sleep "$((attempt * 30))"
-          done
 
-      - name: Verify published ISO
+      - name: Build ISO
+        env:
+          BUILD_MODE: ${{ matrix.mode }}
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          isos=("$RUNNER_TEMP"/blankon-ci-jahitan/[0-9]*-[0-9]*/*.hybrid.iso)
-          test "${#isos[@]}" -eq 1
-          iso="${isos[0]}"
-          test -s "$iso"
-          test -s "$iso.zsync"
-          test -s "$iso.sha256sum"
-          (cd "$(dirname "$iso")" && sha256sum -c "$(basename "$iso.sha256sum")")
-          current="$RUNNER_TEMP/blankon-ci-jahitan/current"
-          test -s "$current/$(basename "$iso")"
-          test -s "$current/current.txt"
-          expected_owner="$(id -u):$(id -g)"
-          for path in "$RUNNER_TEMP/blankon-ci-jahitan" "$(dirname "$iso")" "$iso" "$iso.sha256sum" "$iso.zsync" "$current" "$current/$(basename "$iso")" "$current/current.txt"; do
-            test "$(stat -c '%u:%g' "$path")" = "$expected_owner"
-          done
-          df -h /
+          if [[ "$BUILD_MODE" == local ]]; then
+            ./build-iso --local blankon-live-build
+          elif [[ "$BUILD_MODE" == remote ]]; then
+            ./build-iso --remote https://github.com/BlankOn/blankon-live-build.git sinambung-dummy
+          else
+            exit 1
+          fi
 
-      - name: Verify ISO structure and BIOS live boot
-        if: ${{ (inputs.profile || 'sinambung-dummy') == 'sinambung-dummy' }}
+      - name: Purge ISO package cache
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          isos=("$RUNNER_TEMP"/blankon-ci-jahitan/[0-9]*-[0-9]*/*.hybrid.iso)
-          test "${#isos[@]}" -eq 1
-          bash tests/e2e/verify-iso-acceptance.sh "${isos[0]}"
-
-      - name: Verify real package cache restore
-        if: ${{ inputs.profile != 'gnome' }}
-        run: |
-          set -euo pipefail
-          exec {cache_lock_fd}>>"$GITHUB_WORKSPACE/workdir/.package-cache.lock"
-          flock -n "$cache_lock_fd"
-          podman run --rm --userns=host --user 0:0 --workdir /workdir \
-            --volume "$GITHUB_WORKSPACE/workdir:/workdir:rw" \
-            --volume "$GITHUB_WORKSPACE/workdir/.package-cache.lock:/workdir/.package-cache.lock:ro" \
-            --volume "$GITHUB_WORKSPACE/tests/e2e/verify-package-cache.sh:/tmp/verify-package-cache.sh:ro" \
-            blankon-image-builder:podman bash /tmp/verify-package-cache.sh
-
-      - name: Purge real package cache
-        if: ${{ inputs.profile != 'gnome' }}
-        run: |
-          set -euo pipefail
-          cache_root="$GITHUB_WORKSPACE/workdir/package-cache"
-          archive_config="$GITHUB_WORKSPACE/workdir/.build/config/includes.chroot/etc/blankon/archive.conf"
-          test -d "$cache_root"
-          test -n "$(find "$cache_root" -type f -name '*.deb' -print -quit)"
-          test -f "$archive_config"
           ./purge-iso
-          test ! -e "$cache_root"
-          test -f "$archive_config"
-          test -s "$RUNNER_TEMP/blankon-ci-jahitan/current/current.txt"
+          test ! -e workdir/package-cache

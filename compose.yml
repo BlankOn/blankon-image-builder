@@ -13,8 +13,9 @@ services:
       HOST_GID: ${HOST_GID:?HOST_GID is required}
     volumes:
       - ./workdir:/workdir
+      - ./workdir/.package-cache.lock:/workdir/.package-cache.lock:ro
       - .:/builder:ro
-      - ${BUILD_LOCAL}:${BUILD_LOCAL}
+      - ${BUILD_LOCAL}:${BUILD_LOCAL}:ro
       - ${BUILD_JAHITAN_PATH}:${BUILD_JAHITAN_PATH}
   seccomp-profile-generator:
     build: .
@@ -22,4 +23,5 @@ services:
     user: "${BUILDER_UID:?BUILDER_UID is required}:${BUILDER_GID:?BUILDER_GID is required}"
     volumes:
       - ./workdir:/workdir
+      - ./workdir/.package-cache.lock:/workdir/.package-cache.lock:ro
     entrypoint: ["python3", "/usr/local/bin/generate-seccomp-profile.py"]

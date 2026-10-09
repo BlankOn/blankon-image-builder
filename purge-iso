@@ -13,7 +13,14 @@ if [[ -z "${BUILDER_CONTAINER:-}" ]]; then
   BUILD_LOCAL="${BUILD_LOCAL:?BUILD_LOCAL is required}"
   [[ "$BUILD_LOCAL" == /* && -d "$BUILD_LOCAL" && ! -L "$BUILD_LOCAL" ]] || { echo "Error: BUILD_LOCAL must be a safe absolute directory" >&2; exit 1; }
   BUILD_LOCAL=$(realpath -- "$BUILD_LOCAL")
-  exec {LOCK_FD}>"$SCRIPT_DIR/workdir/.package-cache.lock"
+  package_cache_lock="$SCRIPT_DIR/workdir/.package-cache.lock"
+  mkdir -p -- "$SCRIPT_DIR/workdir"
+  [[ ! -L "$package_cache_lock" ]] || { echo "Error: Package cache lock cannot be a symlink: $package_cache_lock" >&2; exit 1; }
+  if [[ ! -e "$package_cache_lock" ]]; then
+    ( set -o noclobber; : > "$package_cache_lock" ) 2>/dev/null || { echo "Error: Cannot safely create package cache lock: $package_cache_lock" >&2; exit 1; }
+  fi
+  [[ -f "$package_cache_lock" && ! -L "$package_cache_lock" ]] || { echo "Error: Package cache lock must be a regular file: $package_cache_lock" >&2; exit 1; }
+  exec {LOCK_FD}>>"$package_cache_lock"
   flock -n "$LOCK_FD" || { echo "Error: Package cache is in use by another build or purge" >&2; exit 1; }
   host_uid=$(id -u)
   host_gid=$(id -g)
@@ -23,7 +30,12 @@ if [[ -z "${BUILDER_CONTAINER:-}" ]]; then
 fi
 
 if [[ "${PACKAGE_CACHE_LOCK_HELD:-}" != 1 ]]; then
-  exec {LOCK_FD}>"$PWD/.package-cache.lock"
+  [[ ! -L "$PWD/.package-cache.lock" ]] || { echo "Error: Package cache lock cannot be a symlink: $PWD/.package-cache.lock" >&2; exit 1; }
+  if [[ ! -e "$PWD/.package-cache.lock" ]]; then
+    ( set -o noclobber; : > "$PWD/.package-cache.lock" ) 2>/dev/null || { echo "Error: Cannot safely create package cache lock: $PWD/.package-cache.lock" >&2; exit 1; }
+  fi
+  [[ -f "$PWD/.package-cache.lock" && ! -L "$PWD/.package-cache.lock" ]] || { echo "Error: Package cache lock must be a regular file: $PWD/.package-cache.lock" >&2; exit 1; }
+  exec {LOCK_FD}>>"$PWD/.package-cache.lock"
   flock -n "$LOCK_FD" || { echo "Error: Package cache is in use by another build or purge" >&2; exit 1; }
 fi
 cache="$PWD/package-cache"

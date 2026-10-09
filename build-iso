@@ -58,9 +58,6 @@ cleanup() {
         (( exit_status != 0 )) || exit_status=1
     }
     finalize_build
-    if [[ "$LOCK_ACQUIRED" == 1 ]]; then
-        rm -f "$BUILD_LOCKFILE"
-    fi
     if [[ "${BUILD_SEND_TELEGRAM:-1}" != 0 && -n "$BRANCH" && -n "$TODAY" ]]; then
         if [[ -n "$COMMIT_URL" ]]; then
             send_telegram "💿 Jahitan harian $TODAY-$TODAY_COUNT [[ revisi <a href=\\\"$COMMIT_URL\\\">$COMMIT</a> ]] dari $REPO_NAME cabang $BRANCH $RESULT. $FAILURE_REASON $ACTION di ${BUILD_PUBLISH_URL}/$TODAY-$TODAY_COUNT/"
@@ -321,6 +318,7 @@ parse_local_source() {
 }
 
 parse_arguments() {
+  [[ $# -gt 0 ]] || { usage; exit 2; }
   MODE=$1
   if [[ -z "$BUILDER_CONTAINER" ]]; then
     validate_host_root
@@ -375,7 +373,23 @@ run_in_container() {
     echo "Error: Cannot determine Docker Engine server version." >&2
     return 1
   }
-  exec {PACKAGE_CACHE_LOCK_FD}>"$SCRIPT_DIR/workdir/.package-cache.lock" || return 1
+  [[ "$BUILD_LOCKFILE" == /* ]] || { echo "Error: BUILD_LOCKFILE must be an absolute path: $BUILD_LOCKFILE" >&2; return 1; }
+  local build_lock_parent="${BUILD_LOCKFILE%/*}"
+  [[ -n "$build_lock_parent" ]] || build_lock_parent=/
+  [[ -d "$build_lock_parent" ]] || { echo "Error: Build lockfile parent does not exist: $build_lock_parent" >&2; return 1; }
+  [[ ! -L "$BUILD_LOCKFILE" ]] || { echo "Error: Build lockfile cannot be a symlink: $BUILD_LOCKFILE" >&2; return 1; }
+  [[ ! -e "$BUILD_LOCKFILE" || -f "$BUILD_LOCKFILE" ]] || { echo "Error: Build lockfile must be a regular file: $BUILD_LOCKFILE" >&2; return 1; }
+  exec {BUILD_LOCK_FD}>>"$BUILD_LOCKFILE" || return 1
+  flock -n "$BUILD_LOCK_FD" || { echo "Error: Build is already in progress" >&2; return 1; }
+  LOCK_ACQUIRED=1
+  local package_cache_lock="$SCRIPT_DIR/workdir/.package-cache.lock"
+  mkdir -p -- "$SCRIPT_DIR/workdir" || return 1
+  [[ ! -L "$package_cache_lock" ]] || { echo "Error: Package cache lock cannot be a symlink: $package_cache_lock" >&2; return 1; }
+  if [[ ! -e "$package_cache_lock" ]]; then
+    ( set -o noclobber; : > "$package_cache_lock" ) 2>/dev/null || { echo "Error: Cannot safely create package cache lock: $package_cache_lock" >&2; return 1; }
+  fi
+  [[ -f "$package_cache_lock" && ! -L "$package_cache_lock" ]] || { echo "Error: Package cache lock must be a regular file: $package_cache_lock" >&2; return 1; }
+  exec {PACKAGE_CACHE_LOCK_FD}>>"$package_cache_lock" || return 1
   flock -n "$PACKAGE_CACHE_LOCK_FD" || { echo "Error: Package cache is in use by another build or purge" >&2; return 1; }
   BUILD_LOCAL="$BUILD_LOCAL_ROOT" HOST_UID="$host_uid" HOST_GID="$host_gid" BUILDER_UID=0 BUILDER_GID=0 docker compose \
     --project-directory "$SCRIPT_DIR" \
@@ -387,7 +401,7 @@ run_in_container() {
   BUILD_LOCAL="$BUILD_LOCAL_ROOT" HOST_UID="$host_uid" HOST_GID="$host_gid" BUILDER_UID=0 BUILDER_GID=0 PACKAGE_CACHE_LOCK_HELD=1 docker compose \
     --project-directory "$SCRIPT_DIR" \
     --env-file "$SCRIPT_DIR/.env" \
-    run --build --rm -e PACKAGE_CACHE_LOCK_HELD=1 builder /builder/build-iso --namespace-build "$@"
+    run --build --rm -e PACKAGE_CACHE_LOCK_HELD=1 -e BUILD_LOCK_HELD=1 builder /builder/build-iso --namespace-build "$@"
 }
 
 dispatch_build() {
@@ -404,19 +418,11 @@ dispatch_build() {
 }
 
 acquire_build_lock() {
-  if [[ -f "$BUILD_LOCKFILE" ]]; then
-    OLD_PID=$(cat "$BUILD_LOCKFILE")
-    if ps -p "$OLD_PID" > /dev/null 2>&1; then
-      echo "Error: Build already in progress (PID: $OLD_PID). Exiting."
-      exit 1
-    else
-      echo "Warning: Removing stale lock file from PID $OLD_PID"
-      rm -f "$BUILD_LOCKFILE"
-    fi
-  fi
-  echo $$ > "$BUILD_LOCKFILE"
+  [[ "$BUILD_LOCKFILE" == /* ]] || { echo "Error: BUILD_LOCKFILE must be an absolute path: $BUILD_LOCKFILE" >&2; exit 1; }
+  [[ ! -L "$BUILD_LOCKFILE" ]] || { echo "Error: Build lockfile cannot be a symlink: $BUILD_LOCKFILE" >&2; exit 1; }
+  exec {BUILD_LOCK_FD}>>"$BUILD_LOCKFILE" || { echo "Error: Cannot open build lockfile: $BUILD_LOCKFILE" >&2; exit 1; }
+  flock -n "$BUILD_LOCK_FD" || { echo "Error: Build is already in progress" >&2; exit 1; }
   LOCK_ACQUIRED=1
-  START=$(date +%s)
 }
 
 prepare_output_directory() {
@@ -535,10 +541,11 @@ build_image() {
 
 run_container_build() {
   WORKSPACE_DIR=$(pwd -P) || exit 1
+  if [[ "${BUILD_LOCK_HELD:-}" != 1 ]]; then acquire_build_lock; fi
   if [[ "${PACKAGE_CACHE_LOCK_HELD:-}" != 1 ]]; then
     acquire_package_cache_lock || exit 1
   fi
-  acquire_build_lock
+  START=$(date +%s)
   prepare_output_directory
   set_repository_name
   clean_build_workspace
@@ -548,7 +555,7 @@ run_container_build() {
 run_namespace_build() {
   shift
   if ! unshare --user --map-users all --map-groups all --mount --pid --fork --mount-proc --propagation private true; then
-    echo "Error: Rootless build namespace failed. Check that the host enables unprivileged user namespaces and that Docker's seccomp/runtime policy permits unshare plus user, PID, and mount namespaces." >&2
+    echo "Error: Rootless build namespace failed. Check that the host enables unprivileged user namespaces and that the selected container runtime policy permits the requested user, PID, and mount namespaces." >&2
     return 1
   fi
   unshare --user --map-users all --map-groups all --mount --pid --fork --mount-proc --propagation private "$SCRIPT_DIR/build-iso" --container-build "$@"
@@ -575,7 +582,9 @@ main() {
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-  [[ ! -f "$SCRIPT_DIR/.env" ]] || source "$SCRIPT_DIR/.env"
+  if [[ "${BUILDER_CONTAINER:-}" != 1 ]]; then
+    [[ ! -f "$SCRIPT_DIR/.env" ]] || source "$SCRIPT_DIR/.env"
+  fi
   main "$@"
   exit $?
 fi

@@ -41,6 +41,44 @@ unexpected profile structure, but does not cryptographically authenticate the
 tag contents; trusting GitHub and Moby's version tags is a residual supply-chain
 risk.
 
+## Experimental rootless Podman path
+
+On the `podman` branch, `tools/podman-build-iso.sh` builds the existing
+Dockerfile and runs `/usr/local/bin/build-iso` as container `0:0` in a rootless
+Podman engine. Podman's rootless user namespace maps container root to the
+invoking host user and provides the subordinate UID/GID mappings needed for
+package ownership such as `root:shadow`. The builder receives `CAP_SYS_ADMIN`
+only inside that rootless container and uses Podman's default seccomp profile;
+Docker and Compose are not used by this path. This remains experimental and
+has not been runtime-verified locally.
+
+Host prerequisites are Linux, Podman configured for rootless use, `newuidmap`
+and `newgidmap`, at least 65,536 subordinate UIDs and GIDs in `/etc/subuid` and
+`/etc/subgid`, and enabled unprivileged user namespaces. Provide the same
+required `.env` values described above, plus writable `workdir` and output
+directories. Local mode also requires a readable selected source directory.
+Run as the user owning the rootless Podman engine:
+
+```sh
+bash tools/podman-build-iso.sh --local blankon-live-build
+```
+
+The wrapper requires `podman info` to report rootless mode. It never mounts the
+builder repository, so the builder repository `.env` is not mounted into the
+Podman build container. Local mode mounts only the canonical selected live-build
+source directory read-only at its absolute path, plus writable `workdir` and
+`BUILD_JAHITAN_PATH`. The canonical output path must not overlap `BUILD_LOCAL`
+in either mode, so the writable output mount never exposes the source root.
+`BUILD_LOCKFILE` must be a regular, non-symlink file below `BUILD_LOCAL` and
+outside the workdir, output path, and local selected source; it is flocked on the
+host and is not mounted in the container. Remote mode mounts no source tree; its
+clone stays under writable `/workdir`. Podman mode disables Telegram notifications and passes only
+a dummy token. Both `--local` and `--remote` are supported. The `podman` branch's
+GitHub Actions workflow exercises the minimal local E2E source and uploads the
+resulting ISO as an artifact; it does not send notifications or use real
+tokens. The existing Docker workflow continues on other push branches and
+pull requests, but skips every event on `refs/heads/podman`.
+
 The builder profile permits only the exact `unshare` namespace flags used by
 the build and enables `mount`, `umount`, `umount2`, `chroot`, and the newer mount
 API calls `open_tree`, `move_mount`, `mount_setattr`, `fsopen`, `fsconfig`,

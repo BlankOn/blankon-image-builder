@@ -23,6 +23,7 @@ concurrency:
 
 jobs:
   build-iso:
+    if: ${{ github.ref != 'refs/heads/podman' && (github.event_name != 'pull_request' || github.base_ref != 'podman') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     strategy:
@@ -101,6 +102,12 @@ jobs:
           set -euo pipefail
           umask 077
           mkdir -p workdir "$RUNNER_TEMP/blankon-ci-jahitan"
+          test ! -L workdir/.package-cache.lock
+          if [[ ! -e workdir/.package-cache.lock ]]; then
+            ( set -o noclobber; : > workdir/.package-cache.lock )
+          fi
+          test -f workdir/.package-cache.lock
+          test ! -L workdir/.package-cache.lock
           {
             printf 'TELEGRAM_BOT_KEY=%s\n' 'ci-unused-token'
             printf 'BUILD_SEND_TELEGRAM=0\n'

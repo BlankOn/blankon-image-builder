@@ -26,3 +26,4 @@ RUN apt-get update \
 WORKDIR /workdir
 
 COPY tools/generate_seccomp_profile.py /usr/local/bin/generate-seccomp-profile.py
+COPY build-iso /usr/local/bin/build-iso

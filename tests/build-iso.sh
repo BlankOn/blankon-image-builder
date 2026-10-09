@@ -5,6 +5,12 @@ bash "$(dirname -- "${BASH_SOURCE[0]}")/seccomp-profile.sh"
 bash "$(dirname -- "${BASH_SOURCE[0]}")/namespace-dispatch.sh"
 fixture_init
 
+assert_build_lock_available() {
+  exec {check_lock_fd}>>"$BUILD_LOCKFILE"
+  flock -n "$check_lock_fd"
+  exec {check_lock_fd}>&-
+}
+
 bash "$scripts_dir/build-iso" --local "$source_dir"
 
 output_dir=$(find "$BUILD_JAHITAN_PATH" -mindepth 1 -maxdepth 1 -type d ! -name current -print)
@@ -18,7 +24,9 @@ done
 [[ -f "$output_dir/$image_name.tail100.build.log.txt" ]]
 [[ -f .build/config/variant-marker ]]
 [[ -f .build/config/includes.chroot/etc/blankon/archive.conf ]]
-[[ ! -e "$BUILD_LOCKFILE" ]]
+[[ -f "$BUILD_LOCKFILE" ]]
+[[ ! -s "$BUILD_LOCKFILE" ]]
+assert_build_lock_available
 [[ $(wc -l < "$TEST_CURL_LOG") -eq 1 ]]
 (cd -- "$output_dir" && sha256sum -c "$image_name.hybrid.iso.sha256sum")
 [[ $(<"$BUILD_JAHITAN_PATH/current/current.txt") == "$(basename -- "$output_dir")" ]]
@@ -27,7 +35,9 @@ if FAKE_LB_FAIL=1 bash "$scripts_dir/build-iso" --local "$source_dir"; then
   echo 'Error: fake live-build failure was accepted' >&2
   exit 1
 fi
-[[ ! -e "$BUILD_LOCKFILE" ]]
+[[ -f "$BUILD_LOCKFILE" ]]
+[[ ! -s "$BUILD_LOCKFILE" ]]
+assert_build_lock_available
 [[ $(wc -l < "$TEST_CURL_LOG") -eq 2 ]]
 [[ $(<"$BUILD_JAHITAN_PATH/current/current.txt") == "$(basename -- "$output_dir")" ]]
 
@@ -35,7 +45,9 @@ if FAKE_CURRENT_COPY_FAIL=1 bash "$scripts_dir/build-iso" --local "$source_dir";
   echo 'Error: current output copy failure was accepted' >&2
   exit 1
 fi
-[[ ! -e "$BUILD_LOCKFILE" ]]
+[[ -f "$BUILD_LOCKFILE" ]]
+[[ ! -s "$BUILD_LOCKFILE" ]]
+assert_build_lock_available
 [[ -s "$BUILD_JAHITAN_PATH/current/$image_name.hybrid.iso" ]]
 [[ $(<"$BUILD_JAHITAN_PATH/current/current.txt") == "$(basename -- "$output_dir")" ]]
 [[ -z $(find "$BUILD_JAHITAN_PATH" -maxdepth 1 -name '.current.stage.*' -print -quit) ]]
@@ -44,7 +56,9 @@ if FAKE_CURRENT_PROMOTE_FAIL=1 bash "$scripts_dir/build-iso" --local "$source_di
   echo 'Error: current output promotion failure was accepted' >&2
   exit 1
 fi
-[[ ! -e "$BUILD_LOCKFILE" ]]
+[[ -f "$BUILD_LOCKFILE" ]]
+[[ ! -s "$BUILD_LOCKFILE" ]]
+assert_build_lock_available
 [[ -s "$BUILD_JAHITAN_PATH/current/$image_name.hybrid.iso" ]]
 [[ $(<"$BUILD_JAHITAN_PATH/current/current.txt") == "$(basename -- "$output_dir")" ]]
 [[ -z $(find "$BUILD_JAHITAN_PATH" -maxdepth 1 -name '.current.stage.*' -print -quit) ]]
@@ -75,18 +89,18 @@ if bash "$scripts_dir/build-iso" --remote "$source_dir" ci-smoke deadbeef; then
 fi
 [[ $(<"$BUILD_JAHITAN_PATH/current/current.txt") == "$latest_current" ]]
 
-printf '%s\n' "$$" > "$BUILD_LOCKFILE"
+exec {build_lock_fd}>>"$BUILD_LOCKFILE"
+flock -n "$build_lock_fd"
 if lock_output=$(bash "$scripts_dir/build-iso" --local "$source_dir" 2>&1); then
   echo 'Error: active build lock was ignored' >&2
   exit 1
 fi
-[[ "$lock_output" == *'Build already in progress'* ]]
+[[ "$lock_output" == *'Build is already in progress'* ]]
 [[ "$lock_output" != *'Done in'* ]]
-[[ $(<"$BUILD_LOCKFILE") == "$$" ]]
-rm -- "$BUILD_LOCKFILE"
-printf '99999999\n' > "$BUILD_LOCKFILE"
+exec {build_lock_fd}>&-
 bash "$scripts_dir/build-iso" --local "$source_dir"
-[[ ! -e "$BUILD_LOCKFILE" ]]
+[[ -f "$BUILD_LOCKFILE" ]]
+assert_build_lock_available
 latest_current=$(<"$BUILD_JAHITAN_PATH/current/current.txt")
 
 mkdir -p "$test_root/outside"

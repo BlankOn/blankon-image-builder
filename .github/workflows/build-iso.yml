@@ -13,6 +13,90 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  userland-compatibility:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: fedora
+            image: registry.fedoraproject.org/fedora@sha256:b0d8e732ad7e4fc32b6c77e040c40be98a8092f237271d264cc8d36fd9674372
+          - distro: void-glibc
+            image: ghcr.io/void-linux/void-glibc-full@sha256:0d8ab93458484cc3fa1e52d2efd4062c3dcca486c09c57068e99bc4b77e59ea0
+          - distro: void-musl
+            image: ghcr.io/void-linux/void-musl-full@sha256:da909ec86bd0951c37daf7b9abcb79b0892352b7d051fca29705e9605b6b2199
+          - distro: arch
+            image: ghcr.io/archlinux/archlinux@sha256:d15a9b5548b8dd19bc8bf3e5a38265646c903d4d3b88c09c97b68227809fa925
+    container: ${{ matrix.image }}
+    steps:
+      - name: Install fixture dependencies
+        shell: sh
+        env:
+          TEST_DISTRO: ${{ matrix.distro }}
+        run: |
+          set -eu
+          case "$TEST_DISTRO" in
+            fedora)
+              dnf install -y bash coreutils findutils util-linux git python3 curl tar ca-certificates
+              ;;
+            void-glibc|void-musl)
+              xbps-install -Sy bash coreutils findutils util-linux git python3 curl tar ca-certificates
+              ;;
+            arch)
+              pacman -Syu --noconfirm --needed bash coreutils findutils util-linux git python curl tar ca-certificates
+              ;;
+            *)
+              exit 1
+              ;;
+          esac
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Test Podman wrapper fixtures
+        shell: bash
+        run: bash tests/podman-wrapper.sh
+
+      - name: Test namespace dispatch fixtures
+        shell: bash
+        run: bash tests/namespace-dispatch.sh
+
+      - name: Test Podman build lock fixtures
+        shell: bash
+        run: bash tests/podman-build-lock.sh
+
+      - name: Test mount cleanup fixtures
+        shell: bash
+        run: bash tests/mount-cleanup.sh
+
+      - name: Test build ISO fixtures
+        shell: bash
+        run: bash tests/build-iso.sh
+
+      - name: Test cache fixtures
+        shell: bash
+        run: bash tests/cache.sh
+
+      - name: Test purge fixtures
+        shell: bash
+        run: bash tests/purge.sh
+
+      - name: Test seccomp profile fixtures
+        shell: bash
+        run: bash tests/seccomp-profile.sh
+
+      - name: Test live-build sysfs patch fixtures
+        shell: bash
+        run: python3 tests/patch-live-build-sysfs.py
+
+      - name: Test seccomp profile Python fixtures
+        shell: bash
+        run: python3 tests/seccomp-profile.py
+
   fixture-tests:
     runs-on: ubuntu-24.04
     timeout-minutes: 10

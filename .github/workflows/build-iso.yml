@@ -13,6 +13,46 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  fixture-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Test Podman wrapper fixtures
+        run: bash tests/podman-wrapper.sh
+
+      - name: Test namespace dispatch fixtures
+        run: bash tests/namespace-dispatch.sh
+
+      - name: Test Podman build lock fixtures
+        run: bash tests/podman-build-lock.sh
+
+      - name: Test mount cleanup fixtures
+        run: bash tests/mount-cleanup.sh
+
+      - name: Test build ISO fixtures
+        run: bash tests/build-iso.sh
+
+      - name: Test cache fixtures
+        run: bash tests/cache.sh
+
+      - name: Test purge fixtures
+        run: bash tests/purge.sh
+
+      - name: Test seccomp profile fixtures
+        run: bash tests/seccomp-profile.sh
+
+      - name: Test live-build sysfs patch fixtures
+        run: python3 tests/patch-live-build-sysfs.py
+
+      - name: Test seccomp profile Python fixtures
+        run: python3 tests/seccomp-profile.py
+
   build-iso:
     runs-on: ubuntu-24.04
     timeout-minutes: 360

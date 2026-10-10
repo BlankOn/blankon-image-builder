@@ -35,6 +35,13 @@ class PodmanSecurityTests(unittest.TestCase):
             source,
         )
         self.assertIn(
+            "no-new-privileges)\n"
+            "      BUILD_PODMAN_SECURITY_PROFILE=no-new-privileges-experiment-v1\n"
+            "      BUILD_PODMAN_SECURITY_ARGS=(--security-opt 'unmask=/proc/*' --security-opt no-new-privileges)",
+            source,
+        )
+        self.assertIn("no-new-privileges-experiment-v1", source)
+        self.assertIn(
             "BUILD_PODMAN_SECURITY_PROFILE=no-proc-unmask-experiment-v1", source
         )
         self.assertIn("BUILD_PODMAN_SECURITY_PROFILE=baseline-v1", source)

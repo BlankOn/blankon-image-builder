@@ -90,13 +90,18 @@ revision is recorded as `local-uncommitted`.
 
 The container runs as `0:0` under rootless user mapping, with narrowly required
 `CAP_SYS_ADMIN` and default Podman seccomp. By default, the builder also uses
-`unmask=/proc/*` for the nested live-build proc mount. For an opt-in host-side
-experiment, set `BUILD_PODMAN_EXPERIMENT=no-proc-unmask` in the invoking
-process environment to omit only that unmask; `baseline` is the default and
-the selector is not read from `.env`. The experiment is not yet adopted as the
-default. Both profiles retain `CAP_SYS_ADMIN` and default seccomp. The container
-does not use privileged mode, disable seccomp, unmask other system paths, or
-request host `CAP_SYS_ADMIN`. These capability and proc-unmask exceptions
-remain meaningful risks: a malicious source or vulnerable kernel may escape
-the user-namespace boundary. Host kernel, LSM, and runtime policy may add
-restrictions. Do not weaken these defaults to work around host policy failures.
+`unmask=/proc/*` for the nested live-build proc mount. Host-side experiments
+are opt-in through the invoking process environment; the selector is not read
+from `.env`, and `baseline` remains the default. `BUILD_PODMAN_EXPERIMENT=no-proc-unmask`
+omits only the proc unmask. The separate E2 experiment
+`BUILD_PODMAN_EXPERIMENT=no-new-privileges` retains the baseline proc unmask and
+adds only Podman's `no-new-privileges` security option. The profiles are
+independent and must not be combined. Both passed full local and remote builds
+on one Void Linux host, but remain experimental until tested on other supported
+hosts. Neither changes the default. All profiles retain `CAP_SYS_ADMIN` and
+default seccomp. The container does not use privileged mode, disable seccomp,
+unmask other system paths, or request host `CAP_SYS_ADMIN`. These capability
+and proc-unmask exceptions remain meaningful risks: a malicious source or
+vulnerable kernel may escape the user-namespace boundary. Host kernel, LSM, and
+runtime policy may add restrictions. Do not weaken these defaults to work
+around host policy failures.

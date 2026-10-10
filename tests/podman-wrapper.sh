@@ -53,6 +53,7 @@ bash "$fixture/builder/build-iso" --local checkout
 [[ $(<"$PODMAN_LOG") == *'--cap-add=SYS_ADMIN'* ]]
 [[ $(<"$PODMAN_LOG") == *'--security-opt'* ]]
 [[ $(<"$PODMAN_LOG") == *'unmask=/proc/*'* ]]
+[[ $(command grep -c '^--security-opt$' "$PODMAN_LOG") == 1 ]]
 [[ $(<"$PODMAN_LOG") == *'BUILD_BUILDER_GIT_SHA=unknown'* ]]
 [[ $(<"$PODMAN_LOG") == *'BUILD_BUILDER_IMAGE_ID=sha256:fixture-builder-image'* ]]
 [[ $(<"$PODMAN_LOG") == *'BUILD_PODMAN_VERSION=podman version fixture'* ]]
@@ -61,6 +62,7 @@ bash "$fixture/builder/build-iso" --local checkout
 [[ $(<"$PODMAN_LOG") == *'BUILD_ROOTLESS=true'* ]]
 [[ $(<"$PODMAN_LOG") == *'BUILD_USERNS_MODE=host'* ]]
 [[ $(<"$PODMAN_LOG") == *'BUILD_SECURITY_PROFILE=baseline-v1'* ]]
+[[ $(<"$PODMAN_LOG") != *'no-new-privileges'* ]]
 [[ $(<"$PODMAN_LOG") != *"$fixture/builder:$fixture/builder"* ]]
 [[ $(<"$PODMAN_LOG") != *secret* && $(<"$PODMAN_LOG") != *synthetic-fixture-token* ]]
 [[ $(<"$PODMAN_LOG") == *'BUILD_SEND_TELEGRAM=0'* ]]
@@ -112,8 +114,19 @@ bash "$fixture/builder/build-iso" --remote https://example.invalid/live.git main
 BUILD_PODMAN_EXPERIMENT=no-proc-unmask bash "$fixture/builder/build-iso" --local checkout
 [[ $(<"$PODMAN_LOG") == *'--cap-add=SYS_ADMIN'* ]]
 [[ $(<"$PODMAN_LOG") != *'unmask=/proc/*'* ]]
+[[ $(<"$PODMAN_LOG") != *'no-new-privileges'* ]]
+[[ $(command grep -c '^--security-opt$' "$PODMAN_LOG" || true) == 0 ]]
 [[ $(<"$PODMAN_LOG") == *'BUILD_SECURITY_PROFILE=no-proc-unmask-experiment-v1'* ]]
 [[ $(<"$PODMAN_LOG") != *'BUILD_PODMAN_EXPERIMENT='* ]]
+
+: > "$PODMAN_LOG"
+BUILD_PODMAN_EXPERIMENT=no-new-privileges bash "$fixture/builder/build-iso" --local checkout
+[[ $(<"$PODMAN_LOG") == *'--cap-add=SYS_ADMIN'* ]]
+[[ $(<"$PODMAN_LOG") == *'unmask=/proc/*'* ]]
+[[ $(<"$PODMAN_LOG") == *'no-new-privileges'* ]]
+[[ $(<"$PODMAN_LOG") == *'BUILD_SECURITY_PROFILE=no-new-privileges-experiment-v1'* ]]
+[[ $(<"$PODMAN_LOG") != *'BUILD_PODMAN_EXPERIMENT='* ]]
+[[ $(command grep -c '^--security-opt$' "$PODMAN_LOG") == 2 ]]
 
 : > "$PODMAN_LOG"
 : > "$PODMAN_CALL_LOG"

@@ -411,8 +411,12 @@ validate_podman_experiment() {
       BUILD_PODMAN_SECURITY_PROFILE=no-proc-unmask-experiment-v1
       BUILD_PODMAN_SECURITY_ARGS=()
       ;;
+    no-new-privileges)
+      BUILD_PODMAN_SECURITY_PROFILE=no-new-privileges-experiment-v1
+      BUILD_PODMAN_SECURITY_ARGS=(--security-opt 'unmask=/proc/*' --security-opt no-new-privileges)
+      ;;
     *)
-      echo 'Error: Unsupported BUILD_PODMAN_EXPERIMENT; use baseline or no-proc-unmask.' >&2
+      echo 'Error: Unsupported BUILD_PODMAN_EXPERIMENT; use baseline, no-proc-unmask, or no-new-privileges.' >&2
       return 1
       ;;
   esac

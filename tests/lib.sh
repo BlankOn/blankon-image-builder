@@ -53,6 +53,23 @@ EOF
 if [[ "${FAKE_PREPARE_MKDIR_FAIL:-}" == 1 && "$*" == *'.build/config'* ]]; then
   exit 47
 fi
+if [[ -n "${FAKE_MKDIR_BARRIER_DIR:-}" && "$1" == "$BUILD_JAHITAN_PATH/"????????-* ]]; then
+  barrier_marker="$FAKE_MKDIR_BARRIER_DIR/$FAKE_MKDIR_BARRIER_ID"
+  if [[ ! -e "$barrier_marker" ]]; then
+    : > "$barrier_marker"
+    barrier_deadline=$((SECONDS + 10))
+    until [[ -e "$FAKE_MKDIR_BARRIER_DIR/ready" ]]; do
+      if ((SECONDS >= barrier_deadline)); then
+        exit 124
+      fi
+      if [[ -e "$FAKE_MKDIR_BARRIER_DIR/first" && -e "$FAKE_MKDIR_BARRIER_DIR/second" ]]; then
+        : > "$FAKE_MKDIR_BARRIER_DIR/ready"
+        break
+      fi
+      sleep 0.02
+    done
+  fi
+fi
 exec /bin/mkdir "$@"
 EOF
   cat > "$test_root/bin/mv" <<'EOF'

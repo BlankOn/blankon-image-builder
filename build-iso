@@ -653,11 +653,18 @@ prepare_output_directory() {
   TODAY=$(date '+%Y%m%d')
   TODAY_COUNT=$(find "$BUILD_JAHITAN_PATH" -mindepth 1 -maxdepth 1 -type d -name "$TODAY-*" | wc -l)
   TODAY_COUNT=$((TODAY_COUNT + 1))
-  TARGET_DIR="$BUILD_JAHITAN_PATH/$TODAY-$TODAY_COUNT"
-  if ! mkdir -p "$TARGET_DIR"; then
+  while :; do
+    TARGET_DIR="$BUILD_JAHITAN_PATH/$TODAY-$TODAY_COUNT"
+    if mkdir "$TARGET_DIR" 2>/dev/null; then
+      break
+    fi
+    if [[ -e "$TARGET_DIR" || -L "$TARGET_DIR" ]]; then
+      TODAY_COUNT=$((TODAY_COUNT + 1))
+      continue
+    fi
     FAILURE_REASON="Error: Cannot create build output directory: $TARGET_DIR"
     exit 1
-  fi
+  done
 }
 
 set_repository_name() {

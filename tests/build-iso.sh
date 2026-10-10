@@ -3,6 +3,10 @@ set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 fixture_init
 
+today=$(date '+%Y%m%d')
+mkdir -p "$BUILD_JAHITAN_PATH/$today-1" "$BUILD_JAHITAN_PATH/$today-3"
+printf 'stale output\n' > "$BUILD_JAHITAN_PATH/$today-3/stale.txt"
+
 assert_build_lock_available() {
   exec {check_lock_fd}>>"$BUILD_LOCKFILE"
   flock -n "$check_lock_fd"
@@ -12,8 +16,10 @@ assert_build_lock_available() {
 env -u TELEGRAM_BOT_KEY -u TELEGRAM_BOT_KEY_FILE BUILD_SEND_TELEGRAM=1 \
   bash "$scripts_dir/build-iso" --local "$source_dir"
 
-output_dir=$(find "$BUILD_JAHITAN_PATH" -mindepth 1 -maxdepth 1 -type d ! -name current -print)
+output_dir="$BUILD_JAHITAN_PATH/$today-4"
 [[ -n "$output_dir" && -d "$output_dir" ]]
+[[ "$(basename -- "$output_dir")" == "$today-4" ]]
+[[ $(<"$BUILD_JAHITAN_PATH/$today-3/stale.txt") == 'stale output' ]]
 image_name=blankon-live-image-smoke-amd64
 for suffix in contents files packages hybrid.iso hybrid.iso.zsync hybrid.iso.sha256sum; do
   [[ -s "$output_dir/$image_name.$suffix" ]]
@@ -34,6 +40,41 @@ if FAKE_LB_FAIL=1 bash "$scripts_dir/build-iso" --local "$source_dir"; then
   echo 'Error: fake live-build failure was accepted' >&2
   exit 1
 fi
+[[ -d "$BUILD_JAHITAN_PATH/$today-5" ]]
+[[ ! -e "$BUILD_JAHITAN_PATH/$today-5/$image_name.hybrid.iso" ]]
+if FAKE_LB_FAIL=1 bash "$scripts_dir/build-iso" --local "$source_dir"; then
+  echo 'Error: repeated fake live-build failure was accepted' >&2
+  exit 1
+fi
+[[ -d "$BUILD_JAHITAN_PATH/$today-6" ]]
+current_before_concurrent_builds=$(<"$BUILD_JAHITAN_PATH/current/current.txt")
+mkdir -p "$test_root/concurrent/barrier" "$test_root/concurrent/work-a" "$test_root/concurrent/work-b"
+cp -- "$scripts_dir/build-iso" "$test_root/concurrent/build-a"
+cp -- "$scripts_dir/build-iso" "$test_root/concurrent/build-b"
+(cd -- "$test_root/concurrent/work-a" && \
+  env BUILD_LOCKFILE="$test_root/concurrent/lock-a" \
+    FAKE_MKDIR_BARRIER_DIR="$test_root/concurrent/barrier" FAKE_MKDIR_BARRIER_ID=first \
+    FAKE_LB_FAIL=1 bash "$test_root/concurrent/build-a" --local "$source_dir") \
+  > "$test_root/concurrent/build-a.log" 2>&1 &
+concurrent_build_a=$!
+(cd -- "$test_root/concurrent/work-b" && \
+  env BUILD_LOCKFILE="$test_root/concurrent/lock-b" \
+    FAKE_MKDIR_BARRIER_DIR="$test_root/concurrent/barrier" FAKE_MKDIR_BARRIER_ID=second \
+    FAKE_LB_FAIL=1 bash "$test_root/concurrent/build-b" --local "$source_dir") \
+  > "$test_root/concurrent/build-b.log" 2>&1 &
+concurrent_build_b=$!
+if wait "$concurrent_build_a"; then
+  echo 'Error: concurrent fake live-build failure was accepted for build A' >&2
+  exit 1
+fi
+if wait "$concurrent_build_b"; then
+  echo 'Error: concurrent fake live-build failure was accepted for build B' >&2
+  exit 1
+fi
+[[ -e "$test_root/concurrent/barrier/ready" ]]
+[[ -d "$BUILD_JAHITAN_PATH/$today-7" && -d "$BUILD_JAHITAN_PATH/$today-8" ]]
+[[ $(find "$BUILD_JAHITAN_PATH" -mindepth 1 -maxdepth 1 -type d -name "$today-*" | wc -l) == 7 ]]
+[[ $(<"$BUILD_JAHITAN_PATH/current/current.txt") == "$current_before_concurrent_builds" ]]
 [[ -f "$BUILD_LOCKFILE" ]]
 [[ ! -s "$BUILD_LOCKFILE" ]]
 assert_build_lock_available

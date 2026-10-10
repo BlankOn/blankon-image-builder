@@ -19,10 +19,26 @@ class PodmanSecurityTests(unittest.TestCase):
                     source, r"--security-opt\s*=?\s*['\"]?seccomp=unconfined"
                 )
 
-    def test_build_adds_only_the_required_builder_capability_and_proc_unmask(self):
+    def test_build_security_experiment_is_allowlisted_and_preserves_baseline(self):
         source = (ROOT / "build-iso").read_text(encoding="utf-8")
         self.assertIn("--cap-add=SYS_ADMIN", source)
         self.assertIn("unmask=/proc/*", source)
+        self.assertIn(
+            "baseline)\n      BUILD_PODMAN_SECURITY_PROFILE=baseline-v1\n"
+            "      BUILD_PODMAN_SECURITY_ARGS=(--security-opt 'unmask=/proc/*')",
+            source,
+        )
+        self.assertIn(
+            "no-proc-unmask)\n"
+            "      BUILD_PODMAN_SECURITY_PROFILE=no-proc-unmask-experiment-v1\n"
+            "      BUILD_PODMAN_SECURITY_ARGS=()",
+            source,
+        )
+        self.assertIn(
+            "BUILD_PODMAN_SECURITY_PROFILE=no-proc-unmask-experiment-v1", source
+        )
+        self.assertIn("BUILD_PODMAN_SECURITY_PROFILE=baseline-v1", source)
+        self.assertIn("validate_podman_experiment || return $?", source)
         self.assertNotIn("--security-opt seccomp=", source)
         self.assertNotIn("--security-opt=seccomp=", source)
 

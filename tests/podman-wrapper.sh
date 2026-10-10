@@ -12,6 +12,7 @@ cat > "$fixture/bin/podman" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 [[ "${TELEGRAM_BOT_KEY:-}" != synthetic-fixture-token && "${TELEGRAM_BOT_KEY_FILE:-}" == '' && " $* " != *synthetic-fixture-token* ]] || exit 83
+printf '%s\n' "$*" >> "$PODMAN_CALL_LOG"
 case "$1" in
   --version) printf 'podman version fixture\n' ;;
   image)
@@ -42,7 +43,7 @@ BUILD_PUBLISH_URL=https://example.invalid/iso
 TELEGRAM_BOT_KEY=synthetic-fixture-token
 BUILD_SEND_TELEGRAM=1
 EOF
-export PODMAN_LOG="$fixture/podman.log" PATH="$fixture/bin:$PATH"
+export PODMAN_LOG="$fixture/podman.log" PODMAN_CALL_LOG="$fixture/podman-calls.log" PATH="$fixture/bin:$PATH"
 export CURL_ARGUMENTS="$fixture/curl-arguments" CURL_CONFIG="$fixture/curl-config"
 export PODMAN_USERNS=keep-id
 
@@ -51,6 +52,7 @@ bash "$fixture/builder/build-iso" --local checkout
 [[ $(<"$PODMAN_LOG") == *"$fixture/source root/checkout:$fixture/source root/checkout:ro"* ]]
 [[ $(<"$PODMAN_LOG") == *'--cap-add=SYS_ADMIN'* ]]
 [[ $(<"$PODMAN_LOG") == *'--security-opt'* ]]
+[[ $(<"$PODMAN_LOG") == *'unmask=/proc/*'* ]]
 [[ $(<"$PODMAN_LOG") == *'BUILD_BUILDER_GIT_SHA=unknown'* ]]
 [[ $(<"$PODMAN_LOG") == *'BUILD_BUILDER_IMAGE_ID=sha256:fixture-builder-image'* ]]
 [[ $(<"$PODMAN_LOG") == *'BUILD_PODMAN_VERSION=podman version fixture'* ]]
@@ -105,6 +107,24 @@ done
 bash "$fixture/builder/build-iso" --remote https://example.invalid/live.git main
 [[ $(<"$PODMAN_LOG") == *'--userns=host'* ]]
 [[ $(<"$PODMAN_LOG") != *"$fixture/source root/checkout:"* ]]
+
+: > "$PODMAN_LOG"
+BUILD_PODMAN_EXPERIMENT=no-proc-unmask bash "$fixture/builder/build-iso" --local checkout
+[[ $(<"$PODMAN_LOG") == *'--cap-add=SYS_ADMIN'* ]]
+[[ $(<"$PODMAN_LOG") != *'unmask=/proc/*'* ]]
+[[ $(<"$PODMAN_LOG") == *'BUILD_SECURITY_PROFILE=no-proc-unmask-experiment-v1'* ]]
+[[ $(<"$PODMAN_LOG") != *'BUILD_PODMAN_EXPERIMENT='* ]]
+
+: > "$PODMAN_LOG"
+: > "$PODMAN_CALL_LOG"
+if BUILD_PODMAN_EXPERIMENT=unsupported-experiment bash "$fixture/builder/build-iso" --local checkout >"$fixture/unsupported-output" 2>&1; then
+  printf 'Error: Unsupported Podman experiment was accepted.\n' >&2
+  exit 1
+fi
+[[ ! -s "$PODMAN_LOG" ]]
+[[ ! -s "$PODMAN_CALL_LOG" ]]
+[[ $(<"$fixture/unsupported-output") == *'Unsupported BUILD_PODMAN_EXPERIMENT'* ]]
+[[ $(<"$fixture/unsupported-output") != *'unsupported-experiment'* ]]
 
 : > "$PODMAN_LOG"
 if RUN_FAIL=1 bash "$fixture/builder/build-iso" --local checkout; then

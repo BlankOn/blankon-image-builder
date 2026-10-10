@@ -401,6 +401,23 @@ validate_host_arguments() {
   esac
 }
 
+validate_podman_experiment() {
+  case "${BUILD_PODMAN_EXPERIMENT:-baseline}" in
+    baseline)
+      BUILD_PODMAN_SECURITY_PROFILE=baseline-v1
+      BUILD_PODMAN_SECURITY_ARGS=(--security-opt 'unmask=/proc/*')
+      ;;
+    no-proc-unmask)
+      BUILD_PODMAN_SECURITY_PROFILE=no-proc-unmask-experiment-v1
+      BUILD_PODMAN_SECURITY_ARGS=()
+      ;;
+    *)
+      echo 'Error: Unsupported BUILD_PODMAN_EXPERIMENT; use baseline or no-proc-unmask.' >&2
+      return 1
+      ;;
+  esac
+}
+
 load_host_configuration() {
   local env_file="$SCRIPT_DIR/.env" line name value seen_name
   if [[ ! -f "$env_file" ]]; then
@@ -629,7 +646,7 @@ run_podman_build() {
     --userns=host
     --user 0:0
     --cap-add=SYS_ADMIN
-    --security-opt 'unmask=/proc/*'
+    "${BUILD_PODMAN_SECURITY_ARGS[@]}"
     --workdir /workdir
     --volume "$SCRIPT_DIR/workdir:/workdir:rw"
     --volume "$HOST_WORKDIR/.package-cache.lock:/workdir/.package-cache.lock:ro"
@@ -647,7 +664,7 @@ run_podman_build() {
     --env "BUILD_HOST_OS=$host_os"
     --env BUILD_ROOTLESS=true
     --env BUILD_USERNS_MODE=host
-    --env BUILD_SECURITY_PROFILE=baseline-v1
+    --env "BUILD_SECURITY_PROFILE=$BUILD_PODMAN_SECURITY_PROFILE"
     --env BUILD_LOCK_HELD=1
     --env PACKAGE_CACHE_LOCK_HELD=1
   )
@@ -688,6 +705,7 @@ notify_host_build_result() {
 
 run_host_podman_build() {
   validate_host_arguments "$@" || return $?
+  validate_podman_experiment || return $?
   load_host_configuration || return $?
   validate_host_configuration || return $?
   validate_host_paths "$@" || return $?

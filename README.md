@@ -58,6 +58,14 @@ UID/GID, including after failed builds.
 
 ## Build and maintenance
 
+The builder uses the BlankOn Nightly OCI base pinned to manifest digest
+`sha256:76b7e3b7feba1221d649481673af63bf65c310361916d574c6fe1cb90a02fea5`.
+On 2026-10-10, GHCR reported this as a single `linux/amd64` manifest, and the
+manifest body SHA-256 matched the registry digest. This platform matches the
+current x86_64 CI image jobs. To refresh the base, intentionally re-query GHCR
+and verify both the manifest digest and platform in a dedicated review. Pinning
+the base alone does not guarantee complete build reproducibility.
+
 Local paths must remain beneath canonical `BUILD_LOCAL`. A selected source
 contains `variant`, `config/common`, `config/<variant>`, and `auto`:
 

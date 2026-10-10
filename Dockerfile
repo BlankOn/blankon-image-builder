@@ -1,4 +1,4 @@
-FROM ghcr.io/blankon/blankon-nightly:latest
+FROM ghcr.io/blankon/blankon-nightly@sha256:76b7e3b7feba1221d649481673af63bf65c310361916d574c6fe1cb90a02fea5
 
 ENV DEBIAN_FRONTEND=noninteractive
 

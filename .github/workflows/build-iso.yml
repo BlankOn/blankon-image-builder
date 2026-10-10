@@ -138,6 +138,9 @@ jobs:
   build-iso:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
+    env:
+      LIVE_BUILD_BRANCH: sinambung-dummy
+      LIVE_BUILD_COMMIT: fb1e0c22e2c82c09d0c6b674319f4142ee708968
     strategy:
       fail-fast: false
       matrix:
@@ -160,7 +163,10 @@ jobs:
           set -euo pipefail
           source_root="$RUNNER_TEMP/blankon-ci-sources"
           mkdir -p "$source_root"
-          git clone --depth 1 --branch sinambung-dummy https://github.com/BlankOn/blankon-live-build.git "$source_root/blankon-live-build"
+          git clone https://github.com/BlankOn/blankon-live-build.git "$source_root/blankon-live-build"
+          git -C "$source_root/blankon-live-build" checkout --detach "$LIVE_BUILD_COMMIT"
+          actual_commit="$(git -C "$source_root/blankon-live-build" rev-parse HEAD)"
+          test "$actual_commit" = "$LIVE_BUILD_COMMIT"
 
       - name: Prepare safe build environment
         run: |
@@ -183,7 +189,7 @@ jobs:
           if [[ "$BUILD_MODE" == local ]]; then
             ./build-iso --local blankon-live-build
           elif [[ "$BUILD_MODE" == remote ]]; then
-            ./build-iso --remote https://github.com/BlankOn/blankon-live-build.git sinambung-dummy
+            ./build-iso --remote https://github.com/BlankOn/blankon-live-build.git "$LIVE_BUILD_BRANCH" "$LIVE_BUILD_COMMIT"
           else
             exit 1
           fi

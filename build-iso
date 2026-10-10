@@ -67,7 +67,10 @@ cleanup() {
         echo "Error: Failed to save package cache" >&2
         (( exit_status != 0 )) || exit_status=1
     }
-    finalize_build
+    finalize_build || {
+        echo "Error: Failed to finalize build workspace" >&2
+        (( exit_status != 0 )) || exit_status=1
+    }
     return "$exit_status"
 }
 
@@ -678,15 +681,27 @@ set_repository_name() {
 
 clean_build_workspace() {
   ARCH=amd64
-  unmount_build_workspace_mounts
-  rm -rf ./chroot ./local ./cache ./tmp || true
+  unmount_build_workspace_mounts || return 1
+  if ! rm -rf ./chroot ./local ./cache ./tmp; then
+    echo "Error: Failed to remove build workspace directories" >&2
+    return 1
+  fi
 }
 
 unmount_build_workspace_mounts() {
-  local mount_target
+  local mount_target failed=0 mount_targets
+  if ! mount_targets=$(mount | awk -v prefix="$WORKSPACE_DIR/.build/" 'substr($3, 1, length(prefix)) == prefix { print length($3), $3 }' | sort -rn | cut -d ' ' -f 2-); then
+    echo 'Error: Failed to inspect build workspace mounts' >&2
+    return 1
+  fi
   while IFS= read -r mount_target; do
-    umount "$mount_target" || true
-  done < <(mount | awk -v prefix="$WORKSPACE_DIR/.build/" 'substr($3, 1, length(prefix)) == prefix { print length($3), $3 }' | sort -rn | cut -d ' ' -f 2-)
+    [[ -n "$mount_target" ]] || continue
+    if ! umount "$mount_target"; then
+      echo "Error: Failed to unmount workspace mount: $mount_target" >&2
+      failed=1
+    fi
+  done <<< "$mount_targets"
+  return "$failed"
 }
 
 build_local_image() {
@@ -699,7 +714,7 @@ build_local_image() {
   restore_package_cache "$cache_key" || exit 1
   cd .build || exit 1
   lb config --architectures "$ARCH" || exit 1
-  if ! lb build --debug | tee -a "$IMAGE_NAME.build.log"; then
+  if ! lb build --debug 2>&1 | tee "$IMAGE_NAME.build.log"; then
     FAILURE_REASON="Error: Local live-build failed"
     exit 1
   fi
@@ -742,7 +757,6 @@ build_remote_image() {
   restore_package_cache "$cache_key" || exit 1
   cd .build || exit 1
   lb config --architectures "$ARCH" || exit 1
-  rm -f "$IMAGE_NAME.build.log"
   if ! lb build 2>&1 | tee "$IMAGE_NAME.build.log"; then
     FAILURE_REASON="Error: Remote live-build failed"
     exit 1
@@ -761,11 +775,17 @@ build_image() {
     exit 1
   fi
 
+  if ! unmount_build_workspace_mounts; then
+    FAILURE_REASON="Error: Failed to unmount build workspace before publication"
+    exit 1
+  fi
+
   publish_artifacts || exit 1
 }
 
 run_container_build() {
   WORKSPACE_DIR=$(pwd -P) || exit 1
+  export WORKSPACE_DIR
   if [[ "${BUILD_LOCK_HELD:-}" != 1 ]]; then acquire_build_lock; fi
   if [[ "${PACKAGE_CACHE_LOCK_HELD:-}" != 1 ]]; then
     acquire_package_cache_lock || exit 1
@@ -773,7 +793,7 @@ run_container_build() {
   START=$(date +%s)
   prepare_output_directory
   set_repository_name
-  clean_build_workspace
+  clean_build_workspace || exit 1
   build_image
 }
 

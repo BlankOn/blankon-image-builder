@@ -27,6 +27,10 @@ for suffix in contents files packages hybrid.iso hybrid.iso.zsync hybrid.iso.sha
 done
 [[ -f "$output_dir/$image_name.build.log.txt" ]]
 [[ -f "$output_dir/$image_name.tail100.build.log.txt" ]]
+for marker in 'fake lb stdout marker' 'fake lb stderr marker'; do
+  [[ $(<"$output_dir/$image_name.build.log.txt") == *"$marker"* ]]
+done
+[[ $(<"$output_dir/$image_name.build.log.txt") != *'stale-log marker'* ]]
 [[ -f .build/config/variant-marker ]]
 [[ -f .build/config/includes.chroot/etc/blankon/archive.conf ]]
 [[ -f "$BUILD_LOCKFILE" ]]
@@ -42,6 +46,7 @@ if FAKE_LB_FAIL=1 bash "$scripts_dir/build-iso" --local "$source_dir"; then
 fi
 [[ -d "$BUILD_JAHITAN_PATH/$today-5" ]]
 [[ ! -e "$BUILD_JAHITAN_PATH/$today-5/$image_name.hybrid.iso" ]]
+[[ $(<"$BUILD_JAHITAN_PATH/current/current.txt") == "$today-4" ]]
 if FAKE_LB_FAIL=1 bash "$scripts_dir/build-iso" --local "$source_dir"; then
   echo 'Error: repeated fake live-build failure was accepted' >&2
   exit 1
@@ -132,7 +137,11 @@ printf 'branch tip\n' > "$source_dir/config/smoke/variant-marker"
 git -C "$source_dir" -c commit.gpgsign=false -c user.name=CI -c user.email=ci@example.invalid commit -qam tip
 
 bash "$scripts_dir/build-iso" --remote "$source_dir" ci-smoke "$pinned_commit"
+remote_output="$BUILD_JAHITAN_PATH/$(<"$BUILD_JAHITAN_PATH/current/current.txt")"
 [[ $(<.build/config/variant-marker) == 'variant fixture' ]]
+[[ $(<"$remote_output/$image_name.build.log.txt") == *'fake lb stdout marker'* ]]
+[[ $(<"$remote_output/$image_name.build.log.txt") == *'fake lb stderr marker'* ]]
+[[ $(<"$remote_output/$image_name.build.log.txt") != *'stale-log marker'* ]]
 [[ $(<.build/config/bootloaders/syslinux_common/splash.svg) != *BUILD_NUMBER* ]]
 
 bash "$scripts_dir/build-iso" --remote "$source_dir" ci-smoke
@@ -148,6 +157,26 @@ if bash "$scripts_dir/build-iso" --remote "$source_dir" ci-smoke deadbeef; then
   exit 1
 fi
 [[ $(<"$BUILD_JAHITAN_PATH/current/current.txt") == "$latest_current" ]]
+
+lb_calls_before=$(wc -l < "$TEST_LB_LOG")
+if FAKE_PREPUBLICATION_MOUNT=1 FAKE_WORKSPACE_UMOUNT_FAIL=1 FAKE_PREPUBLICATION_BUILT_MARKER="$test_root/prepublication-built" TEST_MOUNT_LOG="$test_root/prepublication-mount.log" bash "$scripts_dir/build-iso" --local "$source_dir" > "$test_root/prepublication-unmount.log" 2>&1; then
+  echo 'Error: pre-publication workspace unmount failure was accepted' >&2
+  exit 1
+fi
+[[ $(wc -l < "$TEST_LB_LOG") -gt "$lb_calls_before" ]]
+[[ $(<"$test_root/prepublication-unmount.log") == *'Failed to unmount workspace mount:'* ]]
+[[ $(<"$BUILD_JAHITAN_PATH/current/current.txt") == "$latest_current" ]]
+
+for failure_variable in FAKE_WORKSPACE_UMOUNT_FAIL FAKE_WORKSPACE_REMOVE_FAIL; do
+  lb_calls_before=$(wc -l < "$TEST_LB_LOG")
+  if env "$failure_variable=1" FAKE_WORKSPACE_MOUNT=1 bash "$scripts_dir/build-iso" --local "$source_dir" > "$test_root/$failure_variable.log" 2>&1; then
+    echo "Error: workspace cleanup failure $failure_variable was accepted" >&2
+    exit 1
+  fi
+  [[ $(wc -l < "$TEST_LB_LOG") == "$lb_calls_before" ]]
+  [[ $(<"$test_root/$failure_variable.log") == *'Failed to'* ]]
+  [[ $(<"$BUILD_JAHITAN_PATH/current/current.txt") == "$latest_current" ]]
+done
 
 exec {build_lock_fd}>>"$BUILD_LOCKFILE"
 flock -n "$build_lock_fd"

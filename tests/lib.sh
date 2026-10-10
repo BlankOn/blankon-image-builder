@@ -43,6 +43,10 @@ exec /bin/cp "$@"
 EOF
   cat > "$test_root/bin/rm" <<'EOF'
 #!/usr/bin/env bash
+if [[ "${FAKE_WORKSPACE_REMOVE_FAIL:-}" == 1 && "$*" == *'./chroot ./local ./cache ./tmp'* ]]; then
+  echo 'fake workspace removal failure' >&2
+  exit 48
+fi
 if [[ "${FAKE_PREPARE_REMOVE_FAIL:-}" == 1 && "$*" == *'.build'* ]]; then
   exit 46
 fi
@@ -83,10 +87,27 @@ exec /bin/mv "$@"
 EOF
   cat > "$test_root/bin/mount" <<'EOF'
 #!/usr/bin/env bash
+if [[ "${FAKE_PREPUBLICATION_MOUNT:-}" == 1 ]]; then
+  mount_count=0
+  [[ ! -f "$TEST_MOUNT_LOG" ]] || mount_count=$(<"$TEST_MOUNT_LOG")
+  mount_count=$((mount_count + 1))
+  printf '%s\n' "$mount_count" > "$TEST_MOUNT_LOG"
+  if ((mount_count == 2)); then
+    printf '/dev/test on %s/.build/chroot/proc type proc (rw)\n' "$WORKSPACE_DIR"
+    exit 0
+  fi
+fi
+if [[ "${FAKE_WORKSPACE_MOUNT:-}" == 1 ]]; then
+  printf '/dev/test on %s/.build/chroot/proc type proc (rw)\n' "$WORKSPACE_DIR"
+fi
 exit 0
 EOF
   cat > "$test_root/bin/umount" <<'EOF'
 #!/usr/bin/env bash
+if [[ "${FAKE_WORKSPACE_UMOUNT_FAIL:-}" == 1 ]]; then
+  echo 'fake busy mount' >&2
+  exit 32
+fi
 exit 0
 EOF
   cat > "$test_root/bin/curl" <<'EOF'
@@ -130,8 +151,15 @@ EOF
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$TEST_LB_LOG"
 case "$1" in
-  clean|config) exit 0 ;;
+  clean) exit 0 ;;
+  config)
+    printf 'stale-log marker\n' > ../"blankon-live-image-$(<variant)-amd64.build.log"
+    exit 0
+    ;;
   build)
+    [[ -z "${FAKE_PREPUBLICATION_BUILT_MARKER:-}" ]] || : > "$FAKE_PREPUBLICATION_BUILT_MARKER"
+    printf 'fake lb stdout marker\n'
+    printf 'fake lb stderr marker\n' >&2
     case "${FAKE_LB_EXPECT_CACHE:-ignore}" in
       present|absent)
         for stage in bootstrap chroot binary; do
@@ -186,6 +214,7 @@ EOF
   export TEST_CURL_CONFIG="$test_root/curl-config.log"
   export TEST_CACHE_LOG="$test_root/cache.log"
   export TEST_LB_LOG="$test_root/lb.log"
+  export TEST_MOUNT_LOG="$test_root/mount.log"
 
   cd -- "$test_root/workdir"
 }

@@ -16,6 +16,16 @@ validate_required_environment() {
   fi
 }
 
+set_live_source_identity() {
+  local source_dir="$1" source_sha source_status
+  LIVE_SOURCE_GIT_SHA=local-uncommitted
+  if source_sha=$(git -C "$source_dir" rev-parse --verify HEAD 2>/dev/null) && \
+     source_status=$(git -C "$source_dir" status --porcelain --untracked-files=normal 2>/dev/null) && \
+     [[ -z "$source_status" ]]; then
+    LIVE_SOURCE_GIT_SHA="$source_sha"
+  fi
+}
+
 prepare_build_tree() {
   local source_dir="$1"
   local variant
@@ -29,6 +39,7 @@ prepare_build_tree() {
     echo "Error: Missing config/common or config/$variant"
     return 1
   fi
+  set_live_source_identity "$source_dir"
 
   if ! rm -rf .build; then
     echo 'Error: Failed to remove existing .build tree' >&2
@@ -212,6 +223,53 @@ update_current_output() {
     fi
 }
 
+write_build_manifest() {
+    local manifest_path="$TARGET_DIR/$IMAGE_NAME.build-manifest.json" output_checksum output_sha256
+    output_checksum=$(sha256sum -- "$TARGET_DIR/$IMAGE_NAME.hybrid.iso") || return 1
+    output_sha256=${output_checksum%% *}
+    BUILD_MANIFEST_OUTPUT_SHA256="$output_sha256" LIVE_SOURCE_GIT_SHA="${LIVE_SOURCE_GIT_SHA:-unknown}" python3 - "$manifest_path" <<'PY'
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+manifest_path = Path(sys.argv[1])
+manifest = {
+    "builder_git_sha": os.environ.get("BUILD_BUILDER_GIT_SHA", "unknown"),
+    "live_source_git_sha": os.environ.get("LIVE_SOURCE_GIT_SHA", "unknown"),
+    "builder_image_id": os.environ.get("BUILD_BUILDER_IMAGE_ID", "unknown"),
+    "podman_version": os.environ.get("BUILD_PODMAN_VERSION", "unknown"),
+    "host_kernel": os.environ.get("BUILD_HOST_KERNEL", "unknown"),
+    "host_os": os.environ.get("BUILD_HOST_OS", "unknown"),
+    "rootless": os.environ.get("BUILD_ROOTLESS", "").lower() == "true",
+    "userns_mode": os.environ.get("BUILD_USERNS_MODE", "unknown"),
+    "security_profile": os.environ.get("BUILD_SECURITY_PROFILE", "unknown"),
+    "output_sha256": os.environ["BUILD_MANIFEST_OUTPUT_SHA256"],
+    "build_result": "success",
+}
+temporary_path = None
+try:
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=manifest_path.parent,
+        prefix=f".{manifest_path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as temporary_file:
+        temporary_path = Path(temporary_file.name)
+        json.dump(manifest, temporary_file, indent=2, sort_keys=True)
+        temporary_file.write("\n")
+    os.chmod(temporary_path, 0o644)
+    os.replace(temporary_path, manifest_path)
+except Exception:
+    if temporary_path is not None and temporary_path.exists():
+        temporary_path.unlink()
+    raise
+PY
+}
+
 publish_artifacts() {
     local suffix
 
@@ -230,7 +288,14 @@ publish_artifacts() {
         FAILURE_REASON="Error: Failed to generate SHA-256 checksum"
         return 1
     fi
+    if ! write_build_manifest; then
+        FAILURE_REASON="Error: Failed to write build provenance manifest"
+        return 1
+    fi
     if ! update_current_output; then
+        if ! rm -f -- "$TARGET_DIR/$IMAGE_NAME.build-manifest.json"; then
+            echo 'Error: Failed to remove unpublished build manifest' >&2
+        fi
         FAILURE_REASON="Error: Failed to update current Jahitan artifacts"
         return 1
     fi
@@ -267,6 +332,7 @@ initialize_runtime_state() {
   REPO=""
   BRANCH=""
   COMMIT=""
+  LIVE_SOURCE_GIT_SHA=unknown
   START=""
 }
 
@@ -538,8 +604,26 @@ build_builder_image() {
 
 run_podman_build() {
   local mode="$1" build_status=0 container_build_local=/workdir
+  local builder_git_sha=unknown builder_image_id=unknown podman_version=unknown host_kernel=unknown host_os=unknown
   shift
   [[ -z "$HOST_SOURCE_PATH" ]] || container_build_local=$HOST_SOURCE_PATH
+  builder_git_sha=$(git -C "$SCRIPT_DIR" rev-parse --verify HEAD 2>/dev/null) || builder_git_sha=unknown
+  [[ -n "$builder_git_sha" ]] || builder_git_sha=unknown
+  builder_image_id=$(env -u TELEGRAM_BOT_KEY -u TELEGRAM_BOT_KEY_FILE podman image inspect --format '{{.Id}}' blankon-image-builder:podman 2>/dev/null) || builder_image_id=unknown
+  [[ -n "$builder_image_id" ]] || builder_image_id=unknown
+  podman_version=$(env -u TELEGRAM_BOT_KEY -u TELEGRAM_BOT_KEY_FILE podman --version 2>/dev/null) || podman_version=unknown
+  [[ -n "$podman_version" ]] || podman_version=unknown
+  host_kernel=$(uname -r 2>/dev/null) || host_kernel=unknown
+  [[ -n "$host_kernel" ]] || host_kernel=unknown
+  host_os=$(
+    if [[ -r /etc/os-release ]]; then
+      . /etc/os-release
+      printf '%s/%s' "${ID:-unknown}" "${VERSION_ID:-unknown}"
+    else
+      printf 'unknown'
+    fi
+  )
+  [[ -n "$host_os" ]] || host_os=unknown
   local -a args=(
     run --rm
     --userns=host
@@ -556,6 +640,14 @@ run_podman_build() {
     --env "BUILD_LOCAL=$container_build_local"
     --env "BUILD_JAHITAN_PATH=$BUILD_JAHITAN_PATH"
     --env "BUILD_PUBLISH_URL=$BUILD_PUBLISH_URL"
+    --env "BUILD_BUILDER_GIT_SHA=$builder_git_sha"
+    --env "BUILD_BUILDER_IMAGE_ID=$builder_image_id"
+    --env "BUILD_PODMAN_VERSION=$podman_version"
+    --env "BUILD_HOST_KERNEL=$host_kernel"
+    --env "BUILD_HOST_OS=$host_os"
+    --env BUILD_ROOTLESS=true
+    --env BUILD_USERNS_MODE=host
+    --env BUILD_SECURITY_PROFILE=baseline-v1
     --env BUILD_LOCK_HELD=1
     --env PACKAGE_CACHE_LOCK_HELD=1
   )

@@ -70,8 +70,13 @@ Remote mode clones a repository branch and can pin a commit:
 ./build-iso --remote https://github.com/BlankOn/blankon-live-build.git sinambung-dummy <sha>
 ```
 
-Outputs include date-stamped ISO, checksum, zsync metadata, logs, and a
-`current` pointer beneath `BUILD_JAHITAN_PATH`.
+Outputs include a date-stamped ISO, checksum, zsync metadata, build logs, a
+`<image>.build-manifest.json` provenance record, and a `current` pointer beneath
+`BUILD_JAHITAN_PATH`. The manifest is written only after a successful build and
+contains source/builder revisions, image and host/runtime identifiers, the
+output SHA-256, and the successful build result. It excludes credentials,
+usernames, and full host paths. A local source that is dirty or has no Git
+revision is recorded as `local-uncommitted`.
 
 - `workdir/.build`: prepared live-build tree and logs.
 - `workdir/tmp`: remote clones and transient state.

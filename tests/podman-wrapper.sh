@@ -13,6 +13,11 @@ cat > "$fixture/bin/podman" <<'SH'
 set -euo pipefail
 [[ "${TELEGRAM_BOT_KEY:-}" != synthetic-fixture-token && "${TELEGRAM_BOT_KEY_FILE:-}" == '' && " $* " != *synthetic-fixture-token* ]] || exit 83
 case "$1" in
+  --version) printf 'podman version fixture\n' ;;
+  image)
+    [[ "$2" == inspect && "$3" == --format && "$4" == '{{.Id}}' && "$5" == blankon-image-builder:podman ]] || exit 2
+    printf 'sha256:fixture-builder-image\n'
+    ;;
   info) [[ "${TELEGRAM_BOT_KEY:-}" != synthetic-fixture-token && "${TELEGRAM_BOT_KEY_FILE:-}" == '' ]] || exit 80; [[ "${ROOTFUL:-0}" == 1 ]] && printf 'false\n' || printf 'true\n' ;;
   build|run) [[ "${TELEGRAM_BOT_KEY:-}" != synthetic-fixture-token && "${TELEGRAM_BOT_KEY_FILE:-}" == '' ]] || exit 81; printf '%s\n' "$1" >> "$PODMAN_LOG"; printf '%s\n' "$@" >> "$PODMAN_LOG"; [[ "$1" != run || "${RUN_FAIL:-0}" != 1 ]] || exit 42 ;;
   secret) exit 82 ;;
@@ -46,6 +51,14 @@ bash "$fixture/builder/build-iso" --local checkout
 [[ $(<"$PODMAN_LOG") == *"$fixture/source root/checkout:$fixture/source root/checkout:ro"* ]]
 [[ $(<"$PODMAN_LOG") == *'--cap-add=SYS_ADMIN'* ]]
 [[ $(<"$PODMAN_LOG") == *'--security-opt'* ]]
+[[ $(<"$PODMAN_LOG") == *'BUILD_BUILDER_GIT_SHA=unknown'* ]]
+[[ $(<"$PODMAN_LOG") == *'BUILD_BUILDER_IMAGE_ID=sha256:fixture-builder-image'* ]]
+[[ $(<"$PODMAN_LOG") == *'BUILD_PODMAN_VERSION=podman version fixture'* ]]
+[[ $(<"$PODMAN_LOG") == *'BUILD_HOST_KERNEL='* ]]
+[[ $(<"$PODMAN_LOG") == *'BUILD_HOST_OS='* ]]
+[[ $(<"$PODMAN_LOG") == *'BUILD_ROOTLESS=true'* ]]
+[[ $(<"$PODMAN_LOG") == *'BUILD_USERNS_MODE=host'* ]]
+[[ $(<"$PODMAN_LOG") == *'BUILD_SECURITY_PROFILE=baseline-v1'* ]]
 [[ $(<"$PODMAN_LOG") != *"$fixture/builder:$fixture/builder"* ]]
 [[ $(<"$PODMAN_LOG") != *secret* && $(<"$PODMAN_LOG") != *synthetic-fixture-token* ]]
 [[ $(<"$PODMAN_LOG") == *'BUILD_SEND_TELEGRAM=0'* ]]

@@ -31,6 +31,44 @@ for marker in 'fake lb stdout marker' 'fake lb stderr marker'; do
   [[ $(<"$output_dir/$image_name.build.log.txt") == *"$marker"* ]]
 done
 [[ $(<"$output_dir/$image_name.build.log.txt") != *'stale-log marker'* ]]
+python3 - "$output_dir/$image_name.build-manifest.json" "$output_dir/$image_name.hybrid.iso" \
+  "$BUILD_JAHITAN_PATH/current/$image_name.build-manifest.json" "$test_root" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+manifest_path = Path(sys.argv[1])
+manifest_text = manifest_path.read_text()
+manifest = json.loads(manifest_text)
+assert set(manifest) == {
+    "builder_git_sha",
+    "live_source_git_sha",
+    "builder_image_id",
+    "podman_version",
+    "host_kernel",
+    "host_os",
+    "rootless",
+    "userns_mode",
+    "security_profile",
+    "output_sha256",
+    "build_result",
+}
+assert manifest["builder_git_sha"] == "fixture-builder-sha"
+assert manifest["live_source_git_sha"] == "local-uncommitted"
+assert manifest["builder_image_id"] == "sha256:fixture-builder-image"
+assert manifest["podman_version"] == "podman version fixture"
+assert manifest["host_kernel"] == "fixture-kernel"
+assert manifest["host_os"] == "fixture-linux/1"
+assert manifest["rootless"] is True
+assert manifest["userns_mode"] == "host"
+assert manifest["security_profile"] == "baseline-v1"
+assert manifest["output_sha256"] == hashlib.sha256(Path(sys.argv[2]).read_bytes()).hexdigest()
+assert manifest["build_result"] == "success"
+assert Path(sys.argv[3]).read_bytes() == manifest_path.read_bytes()
+assert "ci-unused-token" not in manifest_text
+assert sys.argv[4] not in manifest_text
+PY
 [[ -f .build/config/variant-marker ]]
 [[ -f .build/config/includes.chroot/etc/blankon/archive.conf ]]
 [[ -f "$BUILD_LOCKFILE" ]]
@@ -46,6 +84,7 @@ if FAKE_LB_FAIL=1 bash "$scripts_dir/build-iso" --local "$source_dir"; then
 fi
 [[ -d "$BUILD_JAHITAN_PATH/$today-5" ]]
 [[ ! -e "$BUILD_JAHITAN_PATH/$today-5/$image_name.hybrid.iso" ]]
+[[ ! -e "$BUILD_JAHITAN_PATH/$today-5/$image_name.build-manifest.json" ]]
 [[ $(<"$BUILD_JAHITAN_PATH/current/current.txt") == "$today-4" ]]
 if FAKE_LB_FAIL=1 bash "$scripts_dir/build-iso" --local "$source_dir"; then
   echo 'Error: repeated fake live-build failure was accepted' >&2
@@ -121,6 +160,7 @@ if FAKE_CURRENT_PROMOTE_FAIL=1 bash "$scripts_dir/build-iso" --local "$source_di
   echo 'Error: current output promotion failure was accepted' >&2
   exit 1
 fi
+[[ ! -e "$BUILD_JAHITAN_PATH/$today-16/$image_name.build-manifest.json" ]]
 [[ -f "$BUILD_LOCKFILE" ]]
 [[ ! -s "$BUILD_LOCKFILE" ]]
 assert_build_lock_available
@@ -133,6 +173,18 @@ git -C "$source_dir" init -q -b ci-smoke
 git -C "$source_dir" add .
 git -C "$source_dir" -c commit.gpgsign=false -c user.name=CI -c user.email=ci@example.invalid commit -qm pinned
 pinned_commit=$(git -C "$source_dir" rev-parse HEAD)
+printf 'uncommitted source\n' > "$source_dir/untracked-local"
+bash "$scripts_dir/build-iso" --local "$source_dir"
+local_dirty_output="$BUILD_JAHITAN_PATH/$(<"$BUILD_JAHITAN_PATH/current/current.txt")"
+python3 - "$local_dirty_output/$image_name.build-manifest.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+manifest = json.loads(Path(sys.argv[1]).read_text())
+assert manifest["live_source_git_sha"] == "local-uncommitted"
+PY
+rm -- "$source_dir/untracked-local"
 printf 'branch tip\n' > "$source_dir/config/smoke/variant-marker"
 git -C "$source_dir" -c commit.gpgsign=false -c user.name=CI -c user.email=ci@example.invalid commit -qam tip
 
@@ -143,6 +195,14 @@ remote_output="$BUILD_JAHITAN_PATH/$(<"$BUILD_JAHITAN_PATH/current/current.txt")
 [[ $(<"$remote_output/$image_name.build.log.txt") == *'fake lb stderr marker'* ]]
 [[ $(<"$remote_output/$image_name.build.log.txt") != *'stale-log marker'* ]]
 [[ $(<.build/config/bootloaders/syslinux_common/splash.svg) != *BUILD_NUMBER* ]]
+python3 - "$remote_output/$image_name.build-manifest.json" "$pinned_commit" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+manifest = json.loads(Path(sys.argv[1]).read_text())
+assert manifest["live_source_git_sha"] == sys.argv[2]
+PY
 
 bash "$scripts_dir/build-iso" --remote "$source_dir" ci-smoke
 [[ $(<.build/config/variant-marker) == 'branch tip' ]]

@@ -46,7 +46,10 @@ expansion or command substitution:
   are enabled. Keep `.env` private and untracked.
 
 Entrypoints validate path overlap, symlinks, lock type, and nested mounts. Only
-selected local source is mounted read-only; workdir and output are writable.
+selected local source is mounted read-only; workdir is writable. The host mounts
+a fresh hidden staging directory under workdir, not the published output root,
+into the container. After validating the staged release and checksum, the host
+promotes it to a reserved dated output directory and updates `current`.
 Remote clones stay under workdir; no source tree is mounted. The builder
 checkout, `.env`, and token are not passed to the container, which receives
 `BUILD_SEND_TELEGRAM=0`. Optional notification runs on the host after the

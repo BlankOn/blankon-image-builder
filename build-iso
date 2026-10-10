@@ -292,6 +292,9 @@ publish_artifacts() {
         FAILURE_REASON="Error: Failed to write build provenance manifest"
         return 1
     fi
+    if [[ "${BUILD_PUBLISH_STAGING_ONLY:-}" == 1 ]]; then
+        return 0
+    fi
     if ! update_current_output; then
         if ! rm -f -- "$TARGET_DIR/$IMAGE_NAME.build-manifest.json"; then
             echo 'Error: Failed to remove unpublished build manifest' >&2
@@ -624,10 +627,11 @@ build_builder_image() {
 }
 
 run_podman_build() {
-  local mode="$1" build_status=0 container_build_local=/workdir
+  local mode="$1" build_status=0 container_build_local=/workdir stage_dir
   local builder_git_sha=unknown builder_image_id=unknown podman_version=unknown host_kernel=unknown host_os=unknown
   shift
   [[ -z "$HOST_SOURCE_PATH" ]] || container_build_local=$HOST_SOURCE_PATH
+  stage_dir=$(mktemp -d "$HOST_WORKDIR/.build-stage.XXXXXXXX") || return 1
   builder_git_sha=$(git -C "$SCRIPT_DIR" rev-parse --verify HEAD 2>/dev/null) || builder_git_sha=unknown
   [[ -n "$builder_git_sha" ]] || builder_git_sha=unknown
   builder_image_id=$(env -u TELEGRAM_BOT_KEY -u TELEGRAM_BOT_KEY_FILE podman image inspect --format '{{.Id}}' blankon-image-builder:podman 2>/dev/null) || builder_image_id=unknown
@@ -654,12 +658,13 @@ run_podman_build() {
     --workdir /workdir
     --volume "$SCRIPT_DIR/workdir:/workdir:rw"
     --volume "$HOST_WORKDIR/.package-cache.lock:/workdir/.package-cache.lock:ro"
-    --volume "$BUILD_JAHITAN_PATH:$BUILD_JAHITAN_PATH:rw"
+    --volume "$stage_dir:/build-output:rw"
     --env BUILDER_CONTAINER=1
     --env PODMAN_MODE=1
     --env BUILD_SEND_TELEGRAM=0
     --env "BUILD_LOCAL=$container_build_local"
-    --env "BUILD_JAHITAN_PATH=$BUILD_JAHITAN_PATH"
+    --env BUILD_JAHITAN_PATH=/build-output
+    --env BUILD_PUBLISH_STAGING_ONLY=1
     --env "BUILD_PUBLISH_URL=$BUILD_PUBLISH_URL"
     --env "BUILD_BUILDER_GIT_SHA=$builder_git_sha"
     --env "BUILD_BUILDER_IMAGE_ID=$builder_image_id"
@@ -682,6 +687,83 @@ run_podman_build() {
     args+=("$@")
   fi
   env -u TELEGRAM_BOT_KEY -u TELEGRAM_BOT_KEY_FILE podman "${args[@]}" || build_status=$?
+  if (( build_status == 0 )); then
+    local -a stage_children=() staged_isos=() staged_checksums=() staged_manifests=()
+    local staged_release staged_name staged_file image_name checksum_line checksum_hash checksum_output
+    while IFS= read -r -d '' staged_file; do stage_children+=("$staged_file"); done < <(find "$stage_dir" -mindepth 1 -maxdepth 1 -print0)
+    if (( ${#stage_children[@]} != 1 )) || [[ ! -d "${stage_children[0]:-}" || -L "${stage_children[0]:-}" ]] || \
+       [[ ! "$(basename -- "${stage_children[0]:-}")" =~ ^[0-9]{8}-[1-9][0-9]*$ ]]; then
+      echo 'Error: Build stage must contain exactly one dated release directory.' >&2
+      build_status=1
+    else
+      staged_release=${stage_children[0]}
+      staged_name=$(basename -- "$staged_release")
+      while IFS= read -r -d '' staged_file; do
+        if [[ -L "$staged_file" || ! -f "$staged_file" ]]; then
+          echo 'Error: Build stage contains a symlink or special file.' >&2
+          build_status=1
+          break
+        fi
+        if [[ "$staged_file" == "$staged_release"/* ]]; then
+          case "$staged_file" in
+            *.hybrid.iso) staged_isos+=("$staged_file") ;;
+            *.hybrid.iso.sha256sum) staged_checksums+=("$staged_file") ;;
+            *.build-manifest.json) staged_manifests+=("$staged_file") ;;
+          esac
+        fi
+      done < <(find "$staged_release" -mindepth 1 -print0)
+      if (( build_status == 0 )); then
+        if (( ${#staged_isos[@]} != 1 || ${#staged_checksums[@]} != 1 || ${#staged_manifests[@]} != 1 )); then
+          echo 'Error: Build stage must contain exactly one ISO, checksum, and manifest.' >&2
+          build_status=1
+        else
+          image_name=$(basename -- "${staged_isos[0]%.hybrid.iso}")
+          if [[ ! "$image_name" =~ ^blankon-live-image-[a-z0-9][a-z0-9-]*-(amd64|i386)$ || \
+                "${staged_manifests[0]}" != "$staged_release/$image_name.build-manifest.json" ]]; then
+            echo 'Error: Build stage has an unsafe or mismatched image manifest name.' >&2
+            build_status=1
+          fi
+          for suffix in contents files packages hybrid.iso.zsync build.log.txt tail100.build.log.txt; do
+            [[ -s "$staged_release/$image_name.$suffix" && ! -L "$staged_release/$image_name.$suffix" ]] || build_status=1
+          done
+          [[ -s "${staged_isos[0]}" ]] || build_status=1
+          checksum_line=$(<"${staged_checksums[0]}")
+          if [[ "${staged_checksums[0]}" != "$staged_release/$image_name.hybrid.iso.sha256sum" || ! "$checksum_line" =~ ^([a-fA-F0-9]{64})[[:space:]][[:space:]](.+)$ || "${BASH_REMATCH[2]}" != "$image_name.hybrid.iso" ]]; then
+            build_status=1
+          else
+            checksum_hash=${BASH_REMATCH[1]}
+            checksum_output=$(sha256sum -- "${staged_isos[0]}") || build_status=1
+            [[ "${checksum_output%% *}" == "$checksum_hash" ]] || build_status=1
+          fi
+        fi
+      fi
+      if (( build_status == 0 )); then
+        TODAY=${staged_name%-*}
+        TODAY_COUNT=${staged_name##*-}
+        if ! prepare_output_directory; then
+          build_status=1
+        elif ! cp -a -- "$staged_release/." "$TARGET_DIR/"; then
+          echo 'Error: Failed to promote staged build artifacts.' >&2
+          rm -f -- "$TARGET_DIR"/*.build-manifest.json || echo 'Error: Failed to remove unpublished build manifest.' >&2
+          rm -rf -- "$TARGET_DIR" || echo 'Error: Failed to remove partial promoted output.' >&2
+          build_status=1
+        elif ! rm -rf -- "$stage_dir"; then
+          echo 'Error: Failed to remove build stage before publication.' >&2
+          rm -rf -- "$TARGET_DIR" || echo 'Error: Failed to remove unpublished release directory.' >&2
+          build_status=1
+        elif ! update_current_output; then
+          echo 'Error: Failed to update current Jahitan artifacts.' >&2
+          rm -rf -- "$TARGET_DIR" || echo 'Error: Failed to remove unpublished release directory.' >&2
+          build_status=1
+        fi
+      fi
+      (( build_status == 0 )) || echo 'Error: Build stage validation failed; published current was not changed.' >&2
+    fi
+  fi
+  if ! rm -rf -- "$stage_dir"; then
+    echo "Error: Failed to remove build stage: $stage_dir" >&2
+    (( build_status != 0 )) || build_status=1
+  fi
   return "$build_status"
 }
 
@@ -760,11 +842,11 @@ acquire_build_lock() {
 prepare_output_directory() {
   if [[ "$BUILD_JAHITAN_PATH" != /* ]]; then
     FAILURE_REASON="Error: BUILD_JAHITAN_PATH must be an absolute path: $BUILD_JAHITAN_PATH"
-    exit 1
+    return 1
   fi
   if ! mkdir -p "$BUILD_JAHITAN_PATH"; then
     FAILURE_REASON="Error: Cannot create BUILD_JAHITAN_PATH: $BUILD_JAHITAN_PATH"
-    exit 1
+    return 1
   fi
 
   TODAY=$(date '+%Y%m%d')
@@ -780,7 +862,7 @@ prepare_output_directory() {
       continue
     fi
     FAILURE_REASON="Error: Cannot create build output directory: $TARGET_DIR"
-    exit 1
+    return 1
   done
 }
 
@@ -905,7 +987,7 @@ run_container_build() {
     acquire_package_cache_lock || exit 1
   fi
   START=$(date +%s)
-  prepare_output_directory
+  prepare_output_directory || exit 1
   set_repository_name
   clean_build_workspace || exit 1
   build_image

@@ -4,7 +4,9 @@ set -euo pipefail
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 fixture=$(mktemp -d)
 trap 'rm -rf -- "$fixture"' EXIT
-mkdir -p "$fixture/bin" "$fixture/builder" "$fixture/source root/checkout" "$fixture/output root" "$fixture/locks"
+mkdir -p "$fixture/bin" "$fixture/builder" "$fixture/source root/checkout" "$fixture/output root/20200101-1" "$fixture/locks"
+printf 'published sentinel\n' > "$fixture/output root/sentinel.txt"
+printf 'previous release sentinel\n' > "$fixture/output root/20200101-1/sentinel.txt"
 cp "$repo_dir/build-iso" "$repo_dir/purge-iso" "$repo_dir/Dockerfile" "$fixture/builder/"
 mkdir -p "$fixture/builder/tools"
 cp "$repo_dir/tools/patch-live-build-sysfs.py" "$fixture/builder/tools/"
@@ -20,7 +22,28 @@ case "$1" in
     printf 'sha256:fixture-builder-image\n'
     ;;
   info) [[ "${TELEGRAM_BOT_KEY:-}" != synthetic-fixture-token && "${TELEGRAM_BOT_KEY_FILE:-}" == '' ]] || exit 80; [[ "${ROOTFUL:-0}" == 1 ]] && printf 'false\n' || printf 'true\n' ;;
-  build|run) [[ "${TELEGRAM_BOT_KEY:-}" != synthetic-fixture-token && "${TELEGRAM_BOT_KEY_FILE:-}" == '' ]] || exit 81; printf '%s\n' "$1" >> "$PODMAN_LOG"; printf '%s\n' "$@" >> "$PODMAN_LOG"; [[ "$1" != run || "${RUN_FAIL:-0}" != 1 ]] || exit 42 ;;
+  build|run)
+    [[ "${TELEGRAM_BOT_KEY:-}" != synthetic-fixture-token && "${TELEGRAM_BOT_KEY_FILE:-}" == '' ]] || exit 81
+    printf '%s\n' "$1" >> "$PODMAN_LOG"
+    printf '%s\n' "$@" >> "$PODMAN_LOG"
+    [[ "$1" != run || "${RUN_FAIL:-0}" != 1 ]] || exit 42
+    if [[ "$1" == run && " $* " == *':/build-output:rw'* ]]; then
+      for argument in "$@"; do
+        case "$argument" in
+          *:/build-output:rw) stage_root=${argument%:/build-output:rw} ;;
+        esac
+      done
+      [[ -n "${stage_root:-}" ]] || exit 84
+      release="$stage_root/$(date '+%Y%m%d')-1"
+      mkdir -p "$release"
+      image=blankon-live-image-fixture-amd64
+      for suffix in contents files packages hybrid.iso hybrid.iso.zsync build.log.txt tail100.build.log.txt; do printf 'fixture %s\n' "$suffix" > "$release/$image.$suffix"; done
+      if [[ "${MALFORMED_STAGE:-0}" != 1 ]]; then
+        (cd "$release" && sha256sum "$image.hybrid.iso" > "$image.hybrid.iso.sha256sum")
+      fi
+      printf '{"build_result":"success"}\n' > "$release/$image.build-manifest.json"
+    fi
+    ;;
   secret) exit 82 ;;
   *) exit 2 ;;
 esac
@@ -66,6 +89,18 @@ bash "$fixture/builder/build-iso" --local checkout
 [[ $(<"$PODMAN_LOG") != *"$fixture/builder:$fixture/builder"* ]]
 [[ $(<"$PODMAN_LOG") != *secret* && $(<"$PODMAN_LOG") != *synthetic-fixture-token* ]]
 [[ $(<"$PODMAN_LOG") == *'BUILD_SEND_TELEGRAM=0'* ]]
+[[ $(<"$PODMAN_LOG") == *"$fixture/builder/workdir/.build-stage."*'/build-output:rw'* ]]
+[[ $(<"$PODMAN_LOG") == *'BUILD_JAHITAN_PATH=/build-output'* ]]
+[[ $(<"$PODMAN_LOG") == *'BUILD_PUBLISH_STAGING_ONLY=1'* ]]
+[[ $(<"$PODMAN_LOG") != *"$fixture/output root:$fixture/output root:rw"* ]]
+[[ $(<"$fixture/output root/sentinel.txt") == 'published sentinel' ]]
+[[ $(<"$fixture/output root/20200101-1/sentinel.txt") == 'previous release sentinel' ]]
+[[ -f "$fixture/output root/current/current.txt" ]]
+[[ -s "$fixture/output root/current/blankon-live-image-fixture-amd64.build-manifest.json" ]]
+promoted_iso="$fixture/output root/$(<"$fixture/output root/current/current.txt")/blankon-live-image-fixture-amd64.hybrid.iso"
+(cd "$(dirname -- "$promoted_iso")" && sha256sum -c blankon-live-image-fixture-amd64.hybrid.iso.sha256sum)
+[[ -z $(command find "$fixture/builder/workdir" -maxdepth 1 -name '.build-stage.*' -print -quit) ]]
+initial_current=$(<"$fixture/output root/current/current.txt")
 python3 - "$CURL_CONFIG" <<'PY'
 import json
 import sys
@@ -127,6 +162,7 @@ BUILD_PODMAN_EXPERIMENT=no-new-privileges bash "$fixture/builder/build-iso" --lo
 [[ $(<"$PODMAN_LOG") == *'BUILD_SECURITY_PROFILE=no-new-privileges-experiment-v1'* ]]
 [[ $(<"$PODMAN_LOG") != *'BUILD_PODMAN_EXPERIMENT='* ]]
 [[ $(command grep -c '^--security-opt$' "$PODMAN_LOG") == 2 ]]
+initial_current=$(<"$fixture/output root/current/current.txt")
 
 : > "$PODMAN_LOG"
 : > "$PODMAN_CALL_LOG"
@@ -145,6 +181,14 @@ if RUN_FAIL=1 bash "$fixture/builder/build-iso" --local checkout; then
   exit 1
 fi
 [[ $(<"$PODMAN_LOG") != *secret* ]]
+[[ $(<"$fixture/output root/current/current.txt") == "$initial_current" ]]
+[[ -z $(command find "$fixture/builder/workdir" -maxdepth 1 -name '.build-stage.*' -print -quit) ]]
+if MALFORMED_STAGE=1 bash "$fixture/builder/build-iso" --local checkout; then
+  printf 'Error: Malformed staged release was accepted.\n' >&2
+  exit 1
+fi
+[[ $(<"$fixture/output root/current/current.txt") == "$initial_current" ]]
+[[ -z $(command find "$fixture/output root" -maxdepth 1 -name '.build-stage.*' -print -quit) ]]
 
 : > "$PODMAN_LOG"
 if CURL_FAIL=1 bash "$fixture/builder/build-iso" --local checkout; then

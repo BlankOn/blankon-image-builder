@@ -109,8 +109,9 @@ vulnerable kernel may escape the user-namespace boundary. Host kernel, LSM, and
 runtime policy may add restrictions. Do not weaken these defaults to work
 around host policy failures.
 
-CI also runs mocked script fixtures in Fedora, Void glibc, Void musl, and Arch
-userland containers on an Ubuntu runner. These jobs test userland and script
+CI also runs mocked script fixtures in Fedora, Void glibc, and Arch userland
+containers on an Ubuntu runner. These jobs test userland and script
 compatibility only; they do not simulate or validate the distro's host kernel,
-LSM, SELinux, or Podman runtime.
-The matrix images are pinned by digest and should be refreshed deliberately.
+LSM, SELinux, or Podman runtime. Void musl remains experimental and is not in
+the required matrix. The matrix images are pinned by digest and should be
+refreshed deliberately.

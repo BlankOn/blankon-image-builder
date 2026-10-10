@@ -30,12 +30,30 @@ prepare_build_tree() {
     return 1
   fi
 
-  rm -rf .build
-  mkdir -p .build/config
-  cp -a "$source_dir/config/common/." .build/config/
-  cp -a "$source_dir/config/$variant/." .build/config/
-  cp -a "$source_dir/auto" .build/auto
-  cp "$source_dir/variant" .build/variant
+  if ! rm -rf .build; then
+    echo 'Error: Failed to remove existing .build tree' >&2
+    return 1
+  fi
+  if ! mkdir -p .build/config; then
+    echo 'Error: Failed to create .build/config' >&2
+    return 1
+  fi
+  if ! cp -a "$source_dir/config/common/." .build/config/; then
+    echo 'Error: Failed to copy common build configuration' >&2
+    return 1
+  fi
+  if ! cp -a "$source_dir/config/$variant/." .build/config/; then
+    echo "Error: Failed to copy $variant build configuration" >&2
+    return 1
+  fi
+  if ! cp -a "$source_dir/auto" .build/auto; then
+    echo 'Error: Failed to copy build automation files' >&2
+    return 1
+  fi
+  if ! cp "$source_dir/variant" .build/variant; then
+    echo 'Error: Failed to copy build variant' >&2
+    return 1
+  fi
   VARIANT="$variant"
   IMAGE_NAME="blankon-live-image-$VARIANT-$ARCH"
 }

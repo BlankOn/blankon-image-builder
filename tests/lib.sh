@@ -33,7 +33,27 @@ if [[ "${FAKE_CURRENT_COPY_FAIL:-}" == 1 && "$1" == -vR ]]; then
   echo 'fake current output copy failure' >&2
   exit 43
 fi
+case "${FAKE_PREPARE_COPY_FAIL:-}" in
+  common) [[ "$*" == *'/config/common/.'* ]] && exit 45 ;;
+  variant) [[ "$*" == *'/config/smoke/.'* ]] && exit 45 ;;
+  auto) [[ "$*" == *'/auto .build/auto'* ]] && exit 45 ;;
+  final) [[ "$*" == *'/variant .build/variant'* ]] && exit 45 ;;
+esac
 exec /bin/cp "$@"
+EOF
+  cat > "$test_root/bin/rm" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${FAKE_PREPARE_REMOVE_FAIL:-}" == 1 && "$*" == *'.build'* ]]; then
+  exit 46
+fi
+exec /bin/rm "$@"
+EOF
+  cat > "$test_root/bin/mkdir" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${FAKE_PREPARE_MKDIR_FAIL:-}" == 1 && "$*" == *'.build/config'* ]]; then
+  exit 47
+fi
+exec /bin/mkdir "$@"
 EOF
   cat > "$test_root/bin/mv" <<'EOF'
 #!/usr/bin/env bash
@@ -91,6 +111,7 @@ printf 'zsync fixture\n' > "$output"
 EOF
   cat > "$test_root/bin/lb" <<'EOF'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >> "$TEST_LB_LOG"
 case "$1" in
   clean|config) exit 0 ;;
   build)
@@ -147,6 +168,7 @@ EOF
   export TEST_CURL_LOG="$test_root/curl.log"
   export TEST_CURL_CONFIG="$test_root/curl-config.log"
   export TEST_CACHE_LOG="$test_root/cache.log"
+  export TEST_LB_LOG="$test_root/lb.log"
 
   cd -- "$test_root/workdir"
 }

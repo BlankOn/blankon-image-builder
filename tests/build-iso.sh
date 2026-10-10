@@ -40,6 +40,26 @@ assert_build_lock_available
 [[ ! -e "$TEST_CURL_LOG" ]]
 [[ $(<"$BUILD_JAHITAN_PATH/current/current.txt") == "$(basename -- "$output_dir")" ]]
 
+current_before_prepare_failures=$(<"$BUILD_JAHITAN_PATH/current/current.txt")
+for failure_case in common variant auto final; do
+  lb_calls_before=$(wc -l < "$TEST_LB_LOG")
+  if FAKE_PREPARE_COPY_FAIL="$failure_case" bash "$scripts_dir/build-iso" --local "$source_dir"; then
+    echo "Error: build-tree copy failure for $failure_case was accepted" >&2
+    exit 1
+  fi
+  [[ $(wc -l < "$TEST_LB_LOG") == "$lb_calls_before" ]]
+  [[ $(<"$BUILD_JAHITAN_PATH/current/current.txt") == "$current_before_prepare_failures" ]]
+done
+for failure_variable in FAKE_PREPARE_REMOVE_FAIL FAKE_PREPARE_MKDIR_FAIL; do
+  lb_calls_before=$(wc -l < "$TEST_LB_LOG")
+  if env "$failure_variable=1" bash "$scripts_dir/build-iso" --local "$source_dir"; then
+    echo "Error: build-tree $failure_variable failure was accepted" >&2
+    exit 1
+  fi
+  [[ $(wc -l < "$TEST_LB_LOG") == "$lb_calls_before" ]]
+  [[ $(<"$BUILD_JAHITAN_PATH/current/current.txt") == "$current_before_prepare_failures" ]]
+done
+
 if FAKE_CURRENT_COPY_FAIL=1 bash "$scripts_dir/build-iso" --local "$source_dir"; then
   echo 'Error: current output copy failure was accepted' >&2
   exit 1

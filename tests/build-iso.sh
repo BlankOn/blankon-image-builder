@@ -44,25 +44,39 @@ manifest = json.loads(manifest_text)
 assert set(manifest) == {
     "builder_git_sha",
     "live_source_git_sha",
+    "live_source_status",
+    "oci_base_reference",
     "builder_image_id",
+    "live_build_version",
+    "debootstrap_version",
     "podman_version",
     "host_kernel",
     "host_os",
     "rootless",
     "userns_mode",
     "security_profile",
+    "host_selinux_state",
+    "selinux_enforcing",
+    "podman_selinux_enabled",
     "output_sha256",
     "build_result",
 }
 assert manifest["builder_git_sha"] == "fixture-builder-sha"
-assert manifest["live_source_git_sha"] == "local-uncommitted"
+assert manifest["live_source_git_sha"] == "unknown"
+assert manifest["live_source_status"] == "unavailable"
+assert manifest["oci_base_reference"] == "ghcr.io/blankon/blankon-nightly@sha256:76b7e3b7feba1221d649481673af63bf65c310361916d574c6fe1cb90a02fea5", manifest["oci_base_reference"]
 assert manifest["builder_image_id"] == "sha256:fixture-builder-image"
+assert manifest["live_build_version"] == "live-build fixture"
+assert manifest["debootstrap_version"] == "debootstrap fixture"
 assert manifest["podman_version"] == "podman version fixture"
 assert manifest["host_kernel"] == "fixture-kernel"
 assert manifest["host_os"] == "fixture-linux/1"
 assert manifest["rootless"] is True
 assert manifest["userns_mode"] == "host"
 assert manifest["security_profile"] == "baseline-v1"
+assert manifest["host_selinux_state"] == "Enforcing"
+assert manifest["selinux_enforcing"] is True
+assert manifest["podman_selinux_enabled"] is False
 assert manifest["output_sha256"] == hashlib.sha256(Path(sys.argv[2]).read_bytes()).hexdigest()
 assert manifest["build_result"] == "success"
 assert Path(sys.argv[3]).read_bytes() == manifest_path.read_bytes()
@@ -176,13 +190,14 @@ pinned_commit=$(git -C "$source_dir" rev-parse HEAD)
 printf 'uncommitted source\n' > "$source_dir/untracked-local"
 bash "$scripts_dir/build-iso" --local "$source_dir"
 local_dirty_output="$BUILD_JAHITAN_PATH/$(<"$BUILD_JAHITAN_PATH/current/current.txt")"
-python3 - "$local_dirty_output/$image_name.build-manifest.json" <<'PY'
+python3 - "$local_dirty_output/$image_name.build-manifest.json" "$pinned_commit" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 manifest = json.loads(Path(sys.argv[1]).read_text())
-assert manifest["live_source_git_sha"] == "local-uncommitted"
+assert manifest["live_source_git_sha"] == sys.argv[2]
+assert manifest["live_source_status"] == "dirty"
 PY
 rm -- "$source_dir/untracked-local"
 printf 'branch tip\n' > "$source_dir/config/smoke/variant-marker"
@@ -202,6 +217,7 @@ from pathlib import Path
 
 manifest = json.loads(Path(sys.argv[1]).read_text())
 assert manifest["live_source_git_sha"] == sys.argv[2]
+assert manifest["live_source_status"] == "clean"
 PY
 
 bash "$scripts_dir/build-iso" --remote "$source_dir" ci-smoke

@@ -84,10 +84,13 @@ Remote mode clones a repository branch and can pin a commit:
 Outputs include a date-stamped ISO, checksum, zsync metadata, build logs, a
 `<image>.build-manifest.json` provenance record, and a `current` pointer beneath
 `BUILD_JAHITAN_PATH`. The manifest is written only after a successful build and
-contains source/builder revisions, image and host/runtime identifiers, the
-output SHA-256, and the successful build result. It excludes credentials,
-usernames, and full host paths. A local source that is dirty or has no Git
-revision is recorded as `local-uncommitted`.
+contains the builder revision, live source commit and clean/dirty/unavailable
+status, pinned OCI base reference, built image ID, in-container live-build and
+debootstrap versions, host/runtime and SELinux identifiers, output SHA-256, and
+successful build result. It excludes credentials, usernames, and full host
+paths. Unavailable inputs are identified explicitly. This provenance record
+does not establish deterministic ISO bytes or host attestation, and does not
+guarantee complete build reproducibility.
 
 - `workdir/.build`: prepared live-build tree and logs.
 - `workdir/tmp`: remote clones and transient state.

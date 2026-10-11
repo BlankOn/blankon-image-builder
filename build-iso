@@ -17,12 +17,15 @@ validate_required_environment() {
 }
 
 set_live_source_identity() {
-  local source_dir="$1" source_sha source_status
-  LIVE_SOURCE_GIT_SHA=local-uncommitted
-  if source_sha=$(git -C "$source_dir" rev-parse --verify HEAD 2>/dev/null) && \
-     source_status=$(git -C "$source_dir" status --porcelain --untracked-files=normal 2>/dev/null) && \
-     [[ -z "$source_status" ]]; then
-    LIVE_SOURCE_GIT_SHA="$source_sha"
+  local source_dir="$1" source_status
+  LIVE_SOURCE_GIT_SHA=$(git -C "$source_dir" rev-parse --verify HEAD 2>/dev/null) || LIVE_SOURCE_GIT_SHA=unknown
+  [[ -n "$LIVE_SOURCE_GIT_SHA" ]] || LIVE_SOURCE_GIT_SHA=unknown
+  if [[ "$LIVE_SOURCE_GIT_SHA" == unknown ]] || ! source_status=$(git -C "$source_dir" status --porcelain --untracked-files=normal 2>/dev/null); then
+    LIVE_SOURCE_STATUS=unavailable
+  elif [[ -z "$source_status" ]]; then
+    LIVE_SOURCE_STATUS=clean
+  else
+    LIVE_SOURCE_STATUS=dirty
   fi
 }
 
@@ -227,24 +230,43 @@ write_build_manifest() {
     local manifest_path="$TARGET_DIR/$IMAGE_NAME.build-manifest.json" output_checksum output_sha256
     output_checksum=$(sha256sum -- "$TARGET_DIR/$IMAGE_NAME.hybrid.iso") || return 1
     output_sha256=${output_checksum%% *}
-    BUILD_MANIFEST_OUTPUT_SHA256="$output_sha256" LIVE_SOURCE_GIT_SHA="${LIVE_SOURCE_GIT_SHA:-unknown}" python3 - "$manifest_path" <<'PY'
+    BUILD_MANIFEST_OUTPUT_SHA256="$output_sha256" LIVE_SOURCE_GIT_SHA="${LIVE_SOURCE_GIT_SHA:-unknown}" LIVE_SOURCE_STATUS="${LIVE_SOURCE_STATUS:-unavailable}" python3 - "$manifest_path" <<'PY'
 import json
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 manifest_path = Path(sys.argv[1])
+def read_version(command):
+    try:
+        result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=5)
+        return result.stdout.strip().splitlines()[0] or "unknown"
+    except (OSError, subprocess.SubprocessError, IndexError):
+        return "unknown"
+
+def read_boolean(name):
+    value = os.environ.get(name, "unknown").lower()
+    return True if value == "true" else False if value == "false" else None
+
 manifest = {
     "builder_git_sha": os.environ.get("BUILD_BUILDER_GIT_SHA", "unknown"),
     "live_source_git_sha": os.environ.get("LIVE_SOURCE_GIT_SHA", "unknown"),
+    "live_source_status": os.environ.get("LIVE_SOURCE_STATUS", "unavailable"),
+    "oci_base_reference": os.environ.get("BUILD_OCI_BASE_REFERENCE", "unknown"),
     "builder_image_id": os.environ.get("BUILD_BUILDER_IMAGE_ID", "unknown"),
+    "live_build_version": read_version(["lb", "--version"]),
+    "debootstrap_version": read_version(["debootstrap", "--version"]),
     "podman_version": os.environ.get("BUILD_PODMAN_VERSION", "unknown"),
     "host_kernel": os.environ.get("BUILD_HOST_KERNEL", "unknown"),
     "host_os": os.environ.get("BUILD_HOST_OS", "unknown"),
     "rootless": os.environ.get("BUILD_ROOTLESS", "").lower() == "true",
     "userns_mode": os.environ.get("BUILD_USERNS_MODE", "unknown"),
     "security_profile": os.environ.get("BUILD_SECURITY_PROFILE", "unknown"),
+    "host_selinux_state": os.environ.get("BUILD_HOST_SELINUX_STATE", "unknown"),
+    "selinux_enforcing": read_boolean("BUILD_SELINUX_ENFORCING"),
+    "podman_selinux_enabled": read_boolean("BUILD_PODMAN_SELINUX_ENABLED"),
     "output_sha256": os.environ["BUILD_MANIFEST_OUTPUT_SHA256"],
     "build_result": "success",
 }
@@ -336,6 +358,7 @@ initialize_runtime_state() {
   BRANCH=""
   COMMIT=""
   LIVE_SOURCE_GIT_SHA=unknown
+  LIVE_SOURCE_STATUS=unavailable
   START=""
 }
 
@@ -639,7 +662,7 @@ build_builder_image() {
 
 run_podman_build() {
   local builder_image_id="$1" mode="$2" build_status=0 container_build_local=/workdir stage_dir
-  local builder_git_sha=unknown podman_version=unknown host_kernel=unknown host_os=unknown
+  local builder_git_sha=unknown podman_version=unknown host_kernel=unknown host_os=unknown host_selinux_state=unknown podman_selinux_enabled=unknown selinux_enforcing=unknown oci_base_reference=unknown
   shift
   shift
   [[ -z "$HOST_SOURCE_PATH" ]] || container_build_local=$HOST_SOURCE_PATH
@@ -659,6 +682,24 @@ run_podman_build() {
     fi
   )
   [[ -n "$host_os" ]] || host_os=unknown
+  host_selinux_state=$(getenforce 2>/dev/null) || host_selinux_state=unknown
+  [[ -n "$host_selinux_state" ]] || host_selinux_state=unknown
+  case "$host_selinux_state" in
+    Enforcing) selinux_enforcing=true ;;
+    Permissive|Disabled) selinux_enforcing=false ;;
+  esac
+  podman_selinux_enabled=$(env -u TELEGRAM_BOT_KEY -u TELEGRAM_BOT_KEY_FILE podman info --format '{{.Host.Security.SelinuxEnabled}}' 2>/dev/null) || podman_selinux_enabled=unknown
+  [[ "$podman_selinux_enabled" == true || "$podman_selinux_enabled" == false ]] || podman_selinux_enabled=unknown
+  if [[ -r "$SCRIPT_DIR/Dockerfile" ]]; then
+    while IFS= read -r dockerfile_line || [[ -n "$dockerfile_line" ]]; do
+      read -r -a dockerfile_fields <<< "$dockerfile_line"
+      if [[ "${dockerfile_fields[0]:-}" == FROM && -n "${dockerfile_fields[1]:-}" ]]; then
+        oci_base_reference=${dockerfile_fields[1]}
+        break
+      fi
+    done < "$SCRIPT_DIR/Dockerfile"
+  fi
+  [[ -n "$oci_base_reference" ]] || oci_base_reference=unknown
   local -a args=(
     run --rm
     --userns=host
@@ -681,6 +722,10 @@ run_podman_build() {
     --env "BUILD_PODMAN_VERSION=$podman_version"
     --env "BUILD_HOST_KERNEL=$host_kernel"
     --env "BUILD_HOST_OS=$host_os"
+    --env "BUILD_HOST_SELINUX_STATE=$host_selinux_state"
+    --env "BUILD_SELINUX_ENFORCING=$selinux_enforcing"
+    --env "BUILD_PODMAN_SELINUX_ENABLED=$podman_selinux_enabled"
+    --env "BUILD_OCI_BASE_REFERENCE=$oci_base_reference"
     --env BUILD_ROOTLESS=true
     --env BUILD_USERNS_MODE=host
     --env "BUILD_SECURITY_PROFILE=$BUILD_PODMAN_SECURITY_PROFILE"

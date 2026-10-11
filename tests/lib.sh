@@ -20,7 +20,7 @@ fixture_init() {
     "$source_dir/config/common/includes.chroot/etc/blankon" \
     "$source_dir/config/common/bootloaders/syslinux_common" \
     "$source_dir/config/smoke" "$source_dir/auto"
-  cp -- "$repo_dir/build-iso" "$repo_dir/purge-iso" "$scripts_dir/"
+  cp -- "$repo_dir/build-iso" "$repo_dir/purge-iso" "$repo_dir/Dockerfile" "$scripts_dir/"
   printf 'smoke\n' > "$source_dir/variant"
   printf 'archive fixture\n' > "$source_dir/config/common/includes.chroot/etc/blankon/archive.conf"
   printf '<svg>BUILD_NUMBER</svg>\n' > "$source_dir/config/common/bootloaders/syslinux_common/splash.svg"
@@ -149,6 +149,7 @@ printf 'zsync fixture\n' > "$output"
 EOF
   cat > "$test_root/bin/lb" <<'EOF'
 #!/usr/bin/env bash
+if [[ "$1" == --version ]]; then printf 'live-build fixture\n'; exit 0; fi
 printf '%s\n' "$*" >> "$TEST_LB_LOG"
 case "$1" in
   clean) exit 0 ;;
@@ -198,6 +199,14 @@ case "$1" in
   *) exit 2 ;;
 esac
 EOF
+  cat > "$test_root/bin/debootstrap" <<'EOF'
+#!/usr/bin/env bash
+printf 'debootstrap fixture\n'
+EOF
+  cat > "$test_root/bin/getenforce" <<'EOF'
+#!/usr/bin/env bash
+printf 'Enforcing\n'
+EOF
   chmod +x "$test_root/bin/"*
 
   export PATH="$test_root/bin:$PATH"
@@ -215,6 +224,8 @@ EOF
   export BUILD_ROOTLESS=true
   export BUILD_USERNS_MODE=host
   export BUILD_SECURITY_PROFILE=baseline-v1
+  export BUILD_OCI_BASE_REFERENCE=ghcr.io/blankon/blankon-nightly@sha256:76b7e3b7feba1221d649481673af63bf65c310361916d574c6fe1cb90a02fea5
+  export BUILD_HOST_SELINUX_STATE=Enforcing BUILD_SELINUX_ENFORCING=true BUILD_PODMAN_SELINUX_ENABLED=false
   HOST_UID=$(id -u)
   HOST_GID=$(id -g)
   export HOST_UID HOST_GID

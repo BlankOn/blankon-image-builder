@@ -20,7 +20,19 @@ case "$1" in
   image)
     exit 2
     ;;
-  info) [[ "${TELEGRAM_BOT_KEY:-}" != synthetic-fixture-token && "${TELEGRAM_BOT_KEY_FILE:-}" == '' ]] || exit 80; [[ "${ROOTFUL:-0}" == 1 ]] && printf 'false\n' || printf 'true\n' ;;
+  info)
+    [[ "${TELEGRAM_BOT_KEY:-}" != synthetic-fixture-token && "${TELEGRAM_BOT_KEY_FILE:-}" == '' ]] || exit 80
+    case "${2:-}" in
+      --format)
+        case "${3:-}" in
+          '{{.Host.Security.Rootless}}') [[ "${ROOTFUL:-0}" == 1 ]] && printf 'false\n' || printf 'true\n' ;;
+          '{{.Host.Security.SelinuxEnabled}}') printf 'true\n' ;;
+          *) exit 89 ;;
+        esac
+        ;;
+      *) exit 89 ;;
+    esac
+    ;;
   build|run)
     [[ "${TELEGRAM_BOT_KEY:-}" != synthetic-fixture-token && "${TELEGRAM_BOT_KEY_FILE:-}" == '' ]] || exit 81
     printf '%s\n' "$1" >> "$PODMAN_LOG"
@@ -86,6 +98,11 @@ case "$1" in
 esac
 SH
 chmod +x "$fixture/bin/podman"
+cat > "$fixture/bin/getenforce" <<'SH'
+#!/usr/bin/env bash
+printf 'Disabled\n'
+SH
+chmod +x "$fixture/bin/getenforce"
 cat > "$fixture/bin/curl" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" > "$CURL_ARGUMENTS"
@@ -122,6 +139,9 @@ bash "$fixture/builder/build-iso" --local checkout
 [[ $(<"$PODMAN_LOG") == *'BUILD_PODMAN_VERSION=podman version fixture'* ]]
 [[ $(<"$PODMAN_LOG") == *'BUILD_HOST_KERNEL='* ]]
 [[ $(<"$PODMAN_LOG") == *'BUILD_HOST_OS='* ]]
+[[ $(<"$PODMAN_LOG") == *'BUILD_HOST_SELINUX_STATE=Disabled'* ]]
+[[ $(<"$PODMAN_LOG") == *'BUILD_SELINUX_ENFORCING=false'* ]]
+[[ $(<"$PODMAN_LOG") == *'BUILD_PODMAN_SELINUX_ENABLED=true'* ]]
 [[ $(<"$PODMAN_LOG") == *'BUILD_ROOTLESS=true'* ]]
 [[ $(<"$PODMAN_LOG") == *'BUILD_USERNS_MODE=host'* ]]
 [[ $(<"$PODMAN_LOG") == *'BUILD_SECURITY_PROFILE=baseline-v1'* ]]
@@ -129,6 +149,8 @@ bash "$fixture/builder/build-iso" --local checkout
 [[ $(<"$PODMAN_LOG") != *"$fixture/builder:$fixture/builder"* ]]
 [[ $(<"$PODMAN_LOG") != *secret* && $(<"$PODMAN_LOG") != *synthetic-fixture-token* ]]
 [[ $(<"$PODMAN_LOG") == *'BUILD_SEND_TELEGRAM=0'* ]]
+[[ $(<"$PODMAN_CALL_LOG") == *"info --format {{.Host.Security.Rootless}}"* ]]
+[[ $(<"$PODMAN_CALL_LOG") == *"info --format {{.Host.Security.SelinuxEnabled}}"* ]]
 [[ $(<"$PODMAN_LOG") == *"$fixture/builder/workdir/.build-stage."*'/build-output:rw'* ]]
 [[ $(<"$PODMAN_LOG") == *'BUILD_JAHITAN_PATH=/build-output'* ]]
 [[ $(<"$PODMAN_LOG") == *'BUILD_PUBLISH_STAGING_ONLY=1'* ]]

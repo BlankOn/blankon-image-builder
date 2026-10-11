@@ -1055,19 +1055,36 @@ clean_build_workspace() {
 }
 
 unmount_build_workspace_mounts() {
-  local mount_target failed=0 mount_targets
-  if ! mount_targets=$(mount | awk -v prefix="$WORKSPACE_DIR/.build/" 'substr($3, 1, length(prefix)) == prefix { print length($3), $3 }' | sort -rn | cut -d ' ' -f 2-); then
-    echo 'Error: Failed to inspect build workspace mounts' >&2
-    return 1
-  fi
-  while IFS= read -r mount_target; do
-    [[ -n "$mount_target" ]] || continue
-    if ! umount "$mount_target"; then
-      echo "Error: Failed to unmount workspace mount: $mount_target" >&2
-      failed=1
-    fi
-  done <<< "$mount_targets"
-  return "$failed"
+  python3 -c 'import json, os, subprocess, sys
+try:
+    listing = subprocess.run(["findmnt", "--json", "--list", "--output", "TARGET"], check=True, capture_output=True)
+    data = json.loads(listing.stdout)
+    filesystems = data["filesystems"]
+    if not isinstance(filesystems, list):
+        raise ValueError("filesystems is not a list")
+    root = os.path.normpath(sys.argv[1])
+    targets = []
+    for filesystem in filesystems:
+        if not isinstance(filesystem, dict) or not isinstance(filesystem.get("target"), str):
+            raise ValueError("invalid filesystem target")
+        target = filesystem["target"]
+        normalized = os.path.normpath(target)
+        if normalized != root and os.path.commonpath((root, normalized)) == root:
+            targets.append(target)
+    targets.sort(key=lambda target: (target.count(os.sep), len(target)), reverse=True)
+    failed = False
+    for target in targets:
+        try:
+            result = subprocess.run(["umount", target], check=False)
+        except OSError:
+            result = None
+        if result is None or result.returncode:
+            print(f"Error: Failed to unmount workspace mount: {target}", file=sys.stderr)
+            failed = True
+    sys.exit(1 if failed else 0)
+except (json.JSONDecodeError, KeyError, TypeError, ValueError, OSError, subprocess.CalledProcessError):
+    print("Error: Failed to inspect build workspace mounts", file=sys.stderr)
+    sys.exit(1)' "$WORKSPACE_DIR/.build"
 }
 
 build_local_image() {

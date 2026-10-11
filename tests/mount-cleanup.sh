@@ -7,25 +7,37 @@ trap 'rm -rf -- "$test_root"' EXIT
 mkdir -p "$test_root/bin" "$test_root/workspace/.build"
 mount_log="$test_root/umount.log"
 
-cat > "$test_root/bin/mount" <<'EOF'
+cat > "$test_root/bin/findmnt" <<'EOF'
 #!/usr/bin/env bash
 if [[ "${MOUNT_LIST_FAIL:-}" == 1 ]]; then
   exit 33
 fi
-printf 'devpts on %s type devpts (rw)\n' "$WORKSPACE_DIR/.build/chroot/dev/pts"
-printf 'proc on %s type proc (rw)\n' "$WORKSPACE_DIR/.build/chroot/proc"
-printf 'sysfs on %s type sysfs (ro)\n' "$WORKSPACE_DIR/.build/chroot/sys"
-printf '/dev/test on /home/test/blankon-live-build type none (rw)\n'
+python3 - <<'PY'
+import json
+import os
+root = os.environ["WORKSPACE_DIR"] + "/.build"
+targets = [
+    root,
+    root + "/chroot/dev/pts",
+    root + "/chroot/proc",
+    root + "/chroot/sys",
+    root + "/chroot/dev/pts/child",
+    root + "/chroot/space mount",
+    root + "/chroot/newline\nmount",
+    "/home/test/blankon-live-build",
+]
+print(json.dumps({"filesystems": [{"target": target} for target in targets]}))
+PY
 EOF
 cat > "$test_root/bin/umount" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "$1" >> "$UMOUNT_LOG"
-if [[ "$1" == *'/dev/pts' ]]; then
+python3 -c 'import json, os, sys; open(os.environ["UMOUNT_LOG"], "a").write(json.dumps(sys.argv[1:]) + "\n")' "$1"
+if [[ "$1" == "$WORKSPACE_DIR/.build/chroot/dev/pts" ]]; then
   echo 'fake busy mount' >&2
   exit 32
 fi
 EOF
-chmod +x "$test_root/bin/mount" "$test_root/bin/umount"
+chmod +x "$test_root/bin/findmnt" "$test_root/bin/umount"
 
 source "$repo_dir/build-iso"
 WORKSPACE_DIR="$test_root/workspace"
@@ -38,16 +50,23 @@ if unmount_build_workspace_mounts 2>"$test_root/unmount-errors.log"; then
   exit 1
 fi
 
-expected="$test_root/workspace/.build/chroot/dev/pts
-$test_root/workspace/.build/chroot/proc
-$test_root/workspace/.build/chroot/sys"
-[[ "$(<"$mount_log")" == "$expected" ]]
-[[ "$(wc -l < "$mount_log")" -eq 3 ]]
+python3 - "$mount_log" "$test_root/workspace/.build" <<'PY'
+import json
+import sys
+with open(sys.argv[1]) as log:
+    actual = [json.loads(line) for line in log]
+root = sys.argv[2]
+expected = [
+    [root + "/chroot/dev/pts/child"],
+    [root + "/chroot/dev/pts"],
+    [root + "/chroot/newline\nmount"],
+    [root + "/chroot/space mount"],
+    [root + "/chroot/proc"],
+    [root + "/chroot/sys"],
+]
+assert actual == expected, (actual, expected)
+PY
 [[ $(<"$test_root/unmount-errors.log") == *"Failed to unmount workspace mount: $test_root/workspace/.build/chroot/dev/pts"* ]]
-if [[ "$(<"$mount_log")" == *'/home/test/blankon-live-build'* ]]; then
-  printf 'Error: source mount was unmounted\n' >&2
-  exit 1
-fi
 
 : > "$mount_log"
 export MOUNT_LIST_FAIL=1

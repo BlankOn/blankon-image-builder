@@ -3,6 +3,11 @@ set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 fixture_init
 
+output_mode_probe="$test_root/output-mode-probe"
+: > "$output_mode_probe"
+expected_output_mode=$(stat -c '%a' "$output_mode_probe")
+rm -- "$output_mode_probe"
+
 today=$(date '+%Y%m%d')
 mkdir -p "$BUILD_JAHITAN_PATH/$today-1" "$BUILD_JAHITAN_PATH/$today-3"
 printf 'stale output\n' > "$BUILD_JAHITAN_PATH/$today-3/stale.txt"
@@ -214,7 +219,7 @@ remote_clone=$(find tmp -mindepth 1 -maxdepth 1 -type d -print -quit)
 [[ $(stat -c '%u:%g' tmp) == "$(id -u):$(id -g)" ]]
 [[ $(stat -c '%u:%g' "$remote_clone") == "$(id -u):$(id -g)" ]]
 [[ -r "$remote_output/$image_name.hybrid.iso" ]]
-[[ $(stat -c '%a' "$remote_output/$image_name.hybrid.iso") != 600 ]]
+[[ $(stat -c '%a' "$remote_output/$image_name.hybrid.iso") == "$expected_output_mode" ]]
 for stage in bootstrap chroot binary; do
   [[ -n $(find "$cache_root" -path "*/packages.$stage/fixture.deb" -print -quit) ]]
 done

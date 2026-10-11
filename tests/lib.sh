@@ -85,22 +85,36 @@ if [[ "${FAKE_CURRENT_PROMOTE_FAIL:-}" == 1 && "$1" == -- && \
 fi
 exec /bin/mv "$@"
 EOF
-  cat > "$test_root/bin/mount" <<'EOF'
+  cat > "$test_root/bin/findmnt" <<'EOF'
 #!/usr/bin/env bash
+emit_mounts() {
+  python3 -c 'import json, sys; print(json.dumps({"filesystems": [{"target": target} for target in sys.argv[1:]]}))' "$@"
+}
 if [[ "${FAKE_PREPUBLICATION_MOUNT:-}" == 1 ]]; then
-  mount_count=0
-  [[ ! -f "$TEST_MOUNT_LOG" ]] || mount_count=$(<"$TEST_MOUNT_LOG")
-  mount_count=$((mount_count + 1))
-  printf '%s\n' "$mount_count" > "$TEST_MOUNT_LOG"
-  if ((mount_count == 2)); then
-    printf '/dev/test on %s/.build/chroot/proc type proc (rw)\n' "$WORKSPACE_DIR"
-    exit 0
+  if [[ " $* " == *' --json '* ]]; then
+    mount_count=0
+    [[ ! -f "$TEST_MOUNT_LOG" ]] || mount_count=$(<"$TEST_MOUNT_LOG")
+    mount_count=$((mount_count + 1))
+    printf '%s\n' "$mount_count" > "$TEST_MOUNT_LOG"
+    if ((mount_count == 2)); then
+      emit_mounts "$WORKSPACE_DIR/.build/chroot/proc"
+      exit
+    fi
+    emit_mounts
+    exit
   fi
 fi
 if [[ "${FAKE_WORKSPACE_MOUNT:-}" == 1 ]]; then
-  printf '/dev/test on %s/.build/chroot/proc type proc (rw)\n' "$WORKSPACE_DIR"
+  if [[ " $* " == *' --json '* ]]; then
+    emit_mounts "$WORKSPACE_DIR/.build/chroot/proc"
+  else
+    printf '%s\n' "$WORKSPACE_DIR/.build/chroot/proc"
+  fi
+elif [[ " $* " == *' --json '* ]]; then
+  emit_mounts
+else
+  exit 0
 fi
-exit 0
 EOF
   cat > "$test_root/bin/umount" <<'EOF'
 #!/usr/bin/env bash
@@ -235,5 +249,6 @@ EOF
   export TEST_LB_LOG="$test_root/lb.log"
   export TEST_MOUNT_LOG="$test_root/mount.log"
 
+  export WORKSPACE_DIR="$test_root/workdir"
   cd -- "$test_root/workdir"
 }

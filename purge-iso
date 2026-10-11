@@ -85,14 +85,26 @@ acquire_host_package_cache_lock() {
   fi
 }
 
+cleanup_builder_iid_file() {
+  [[ -z "${BUILDER_IID_FILE:-}" ]] || rm -f -- "$BUILDER_IID_FILE"
+}
+
 run_host_purge() {
   validate_purge_arguments "$@" || exit $?
   load_build_local || exit $?
   validate_host_purge_runtime
   acquire_host_package_cache_lock
+  BUILDER_IID_FILE=$(mktemp "${TMPDIR:-/tmp}/blankon-purge-builder-iid.XXXXXXXX") || exit 1
+  trap cleanup_builder_iid_file EXIT
   env -u TELEGRAM_BOT_KEY -u TELEGRAM_BOT_KEY_FILE podman build \
+    --iidfile "$BUILDER_IID_FILE" \
     --tag blankon-image-builder:podman \
     --file "$SCRIPT_DIR/Dockerfile" "$SCRIPT_DIR"
+  BUILDER_IMAGE_ID=$(<"$BUILDER_IID_FILE")
+  if [[ ! "$BUILDER_IMAGE_ID" =~ ^sha256:[a-fA-F0-9]{64}$ ]]; then
+    echo 'Error: Podman returned a missing or invalid builder image ID.' >&2
+    exit 1
+  fi
   local -a arguments=(
     run --rm
     --userns=host
@@ -102,7 +114,7 @@ run_host_purge() {
     --volume "$SCRIPT_DIR/workdir/.package-cache.lock:/workdir/.package-cache.lock:ro"
     --env BUILDER_CONTAINER=1
     --env PACKAGE_CACHE_LOCK_HELD=1
-    blankon-image-builder:podman /usr/local/bin/purge-iso
+    "$BUILDER_IMAGE_ID" /usr/local/bin/purge-iso
   )
   env -u TELEGRAM_BOT_KEY -u TELEGRAM_BOT_KEY_FILE podman "${arguments[@]}"
 }

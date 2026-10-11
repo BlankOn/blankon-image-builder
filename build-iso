@@ -620,22 +620,32 @@ acquire_host_locks() {
   fi
 }
 
+cleanup_builder_iid_file() {
+  [[ -z "${BUILDER_IID_FILE:-}" ]] || rm -f -- "$BUILDER_IID_FILE"
+}
+
 build_builder_image() {
+  BUILDER_IID_FILE=$(mktemp "${TMPDIR:-/tmp}/blankon-builder-iid.XXXXXXXX") || return 1
   env -u TELEGRAM_BOT_KEY -u TELEGRAM_BOT_KEY_FILE podman build \
+    --iidfile "$BUILDER_IID_FILE" \
     --tag blankon-image-builder:podman \
-    --file "$SCRIPT_DIR/Dockerfile" "$SCRIPT_DIR"
+    --file "$SCRIPT_DIR/Dockerfile" "$SCRIPT_DIR" || return $?
+  BUILDER_IMAGE_ID=$(<"$BUILDER_IID_FILE") || return 1
+  if [[ ! "$BUILDER_IMAGE_ID" =~ ^sha256:[a-fA-F0-9]{64}$ ]]; then
+    echo 'Error: Podman returned a missing or invalid builder image ID.' >&2
+    return 1
+  fi
 }
 
 run_podman_build() {
-  local mode="$1" build_status=0 container_build_local=/workdir stage_dir
-  local builder_git_sha=unknown builder_image_id=unknown podman_version=unknown host_kernel=unknown host_os=unknown
+  local builder_image_id="$1" mode="$2" build_status=0 container_build_local=/workdir stage_dir
+  local builder_git_sha=unknown podman_version=unknown host_kernel=unknown host_os=unknown
+  shift
   shift
   [[ -z "$HOST_SOURCE_PATH" ]] || container_build_local=$HOST_SOURCE_PATH
   stage_dir=$(mktemp -d "$HOST_WORKDIR/.build-stage.XXXXXXXX") || return 1
   builder_git_sha=$(git -C "$SCRIPT_DIR" rev-parse --verify HEAD 2>/dev/null) || builder_git_sha=unknown
   [[ -n "$builder_git_sha" ]] || builder_git_sha=unknown
-  builder_image_id=$(env -u TELEGRAM_BOT_KEY -u TELEGRAM_BOT_KEY_FILE podman image inspect --format '{{.Id}}' blankon-image-builder:podman 2>/dev/null) || builder_image_id=unknown
-  [[ -n "$builder_image_id" ]] || builder_image_id=unknown
   podman_version=$(env -u TELEGRAM_BOT_KEY -u TELEGRAM_BOT_KEY_FILE podman --version 2>/dev/null) || podman_version=unknown
   [[ -n "$podman_version" ]] || podman_version=unknown
   host_kernel=$(uname -r 2>/dev/null) || host_kernel=unknown
@@ -680,7 +690,7 @@ run_podman_build() {
   if [[ -n "$HOST_SOURCE_PATH" ]]; then
     args+=(--volume "$HOST_SOURCE_PATH:$HOST_SOURCE_PATH:ro")
   fi
-  args+=(blankon-image-builder:podman /usr/local/bin/build-iso --namespace-build "$mode")
+  args+=("$builder_image_id" /usr/local/bin/build-iso --namespace-build "$mode")
   if [[ "$mode" == --local ]]; then
     args+=("$HOST_SOURCE_PATH")
   else
@@ -796,13 +806,14 @@ run_host_podman_build() {
   validate_host_configuration || return $?
   validate_host_paths "$@" || return $?
   acquire_host_locks || return $?
+  trap cleanup_builder_iid_file EXIT
   if ! mkdir -p -- "$BUILD_JAHITAN_PATH"; then
     return 1
   fi
   build_builder_image || return $?
   local mode="$1" build_status=0
   shift
-  run_podman_build "$mode" "$@" || build_status=$?
+  run_podman_build "$BUILDER_IMAGE_ID" "$mode" "$@" || build_status=$?
   notify_host_build_result "$mode" "$build_status" "$@"
 }
 

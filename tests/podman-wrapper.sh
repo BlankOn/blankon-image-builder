@@ -18,15 +18,52 @@ printf '%s\n' "$*" >> "$PODMAN_CALL_LOG"
 case "$1" in
   --version) printf 'podman version fixture\n' ;;
   image)
-    [[ "$2" == inspect && "$3" == --format && "$4" == '{{.Id}}' && "$5" == blankon-image-builder:podman ]] || exit 2
-    printf 'sha256:fixture-builder-image\n'
+    exit 2
     ;;
   info) [[ "${TELEGRAM_BOT_KEY:-}" != synthetic-fixture-token && "${TELEGRAM_BOT_KEY_FILE:-}" == '' ]] || exit 80; [[ "${ROOTFUL:-0}" == 1 ]] && printf 'false\n' || printf 'true\n' ;;
   build|run)
     [[ "${TELEGRAM_BOT_KEY:-}" != synthetic-fixture-token && "${TELEGRAM_BOT_KEY_FILE:-}" == '' ]] || exit 81
     printf '%s\n' "$1" >> "$PODMAN_LOG"
     printf '%s\n' "$@" >> "$PODMAN_LOG"
-    [[ "$1" != run || "${RUN_FAIL:-0}" != 1 ]] || exit 42
+    if [[ "$1" == build ]]; then
+      iidfile=
+      while (($#)); do
+        if [[ "$1" == --iidfile ]]; then iidfile=$2; shift 2; else shift; fi
+      done
+      [[ -n "$iidfile" ]] || exit 85
+      if [[ "${RACE_BUILD:-0}" == 1 ]]; then
+        printf 'sha256:%064d\n' "${RACE_BUILD_COUNT:-1}" > "$iidfile"
+        printf 'sha256:%064d\n' "${RACE_BUILD_COUNT:-1}" > "$RACE_TAG_PATH"
+      else
+        printf 'sha256:%064d\n' 1 > "$iidfile"
+      fi
+      printf '%s\n' "$(<"$iidfile")" >> "$PODMAN_BUILD_ID_LOG"
+      exit 0
+    fi
+    if [[ "$1" == run ]]; then
+      for argument in "$@"; do
+        if [[ "$argument" =~ ^sha256:[a-fA-F0-9]{64}$ ]]; then
+          printf '%s\n' "$argument" >> "$PODMAN_RUN_IMAGE_LOG"
+        fi
+      done
+    fi
+    if [[ "${RACE_BUILD:-0}" == 1 && ! -e "$RACE_MARKER" ]]; then
+      touch "$RACE_MARKER"
+      second_iid="$TMPDIR/second-build.iid"
+      RACE_BUILD_COUNT=2 "$0" build --iidfile "$second_iid" --tag blankon-image-builder:podman
+      [[ $(<"$second_iid") == "sha256:$(printf '%064d' 2)" ]]
+      rm -f -- "$second_iid"
+    fi
+    if [[ "${RACE_BUILD:-0}" == 1 ]]; then
+      [[ $(<"$RACE_TAG_PATH") == "sha256:$(printf '%064d' 2)" ]] || exit 86
+      for argument in "$@"; do
+        if [[ "$argument" =~ ^sha256:[a-fA-F0-9]{64}$ ]]; then
+          printf '%s\n' "$argument" > "$PODMAN_RUN_IMAGE_LOG"
+        fi
+      done
+      [[ $(<"$PODMAN_RUN_IMAGE_LOG") == "sha256:$(printf '%064d' 1)" ]] || exit 87
+    fi
+    [[ "${RUN_FAIL:-0}" != 1 ]] || exit 42
     if [[ "$1" == run && " $* " == *':/build-output:rw'* ]]; then
       for argument in "$@"; do
         case "$argument" in
@@ -66,9 +103,10 @@ BUILD_PUBLISH_URL=https://example.invalid/iso
 TELEGRAM_BOT_KEY=synthetic-fixture-token
 BUILD_SEND_TELEGRAM=1
 EOF
-export PODMAN_LOG="$fixture/podman.log" PODMAN_CALL_LOG="$fixture/podman-calls.log" PATH="$fixture/bin:$PATH"
+export PODMAN_LOG="$fixture/podman.log" PODMAN_CALL_LOG="$fixture/podman-calls.log" PODMAN_BUILD_ID_LOG="$fixture/podman-build-ids.log" PODMAN_RUN_IMAGE_LOG="$fixture/podman-run-images.log" PATH="$fixture/bin:$PATH"
 export CURL_ARGUMENTS="$fixture/curl-arguments" CURL_CONFIG="$fixture/curl-config"
 export PODMAN_USERNS=keep-id
+export TMPDIR="$fixture"
 
 bash "$fixture/builder/build-iso" --local checkout
 [[ $(<"$PODMAN_LOG") == *'--userns=host'* ]]
@@ -78,7 +116,9 @@ bash "$fixture/builder/build-iso" --local checkout
 [[ $(<"$PODMAN_LOG") == *'unmask=/proc/*'* ]]
 [[ $(command grep -c '^--security-opt$' "$PODMAN_LOG") == 1 ]]
 [[ $(<"$PODMAN_LOG") == *'BUILD_BUILDER_GIT_SHA=unknown'* ]]
-[[ $(<"$PODMAN_LOG") == *'BUILD_BUILDER_IMAGE_ID=sha256:fixture-builder-image'* ]]
+[[ $(<"$PODMAN_LOG") == *"BUILD_BUILDER_IMAGE_ID=sha256:$(printf '%064d' 1)"* ]]
+[[ $(<"$PODMAN_LOG") == *"$fixture/builder/workdir/.build-stage."* ]]
+[[ -z $(command find "$fixture" -maxdepth 1 -name 'blankon-builder-iid.*' -print -quit) ]]
 [[ $(<"$PODMAN_LOG") == *'BUILD_PODMAN_VERSION=podman version fixture'* ]]
 [[ $(<"$PODMAN_LOG") == *'BUILD_HOST_KERNEL='* ]]
 [[ $(<"$PODMAN_LOG") == *'BUILD_HOST_OS='* ]]
@@ -165,6 +205,15 @@ BUILD_PODMAN_EXPERIMENT=no-new-privileges bash "$fixture/builder/build-iso" --lo
 initial_current=$(<"$fixture/output root/current/current.txt")
 
 : > "$PODMAN_LOG"
+RACE_MARKER="$fixture/race-marker" RACE_TAG_PATH="$fixture/race-tag" PODMAN_RUN_IMAGE_LOG="$fixture/run-image" RACE_BUILD=1 bash "$fixture/builder/build-iso" --local checkout
+[[ $(<"$fixture/race-tag") == "sha256:$(printf '%064d' 2)" ]]
+[[ $(<"$PODMAN_LOG") == *"BUILD_BUILDER_IMAGE_ID=sha256:$(printf '%064d' 1)"* ]]
+[[ $(<"$fixture/run-image") == "sha256:$(printf '%064d' 1)" ]]
+[[ -e "$fixture/race-marker" ]]
+[[ -z $(command find "$fixture" -maxdepth 1 -name 'blankon-builder-iid.*' -print -quit) ]]
+initial_current=$(<"$fixture/output root/current/current.txt")
+
+: > "$PODMAN_LOG"
 : > "$PODMAN_CALL_LOG"
 if BUILD_PODMAN_EXPERIMENT=unsupported-experiment bash "$fixture/builder/build-iso" --local checkout >"$fixture/unsupported-output" 2>&1; then
   printf 'Error: Unsupported Podman experiment was accepted.\n' >&2
@@ -181,6 +230,7 @@ if RUN_FAIL=1 bash "$fixture/builder/build-iso" --local checkout; then
   exit 1
 fi
 [[ $(<"$PODMAN_LOG") != *secret* ]]
+[[ -z $(command find "$fixture" -maxdepth 1 -name 'blankon-builder-iid.*' -print -quit) ]]
 [[ $(<"$fixture/output root/current/current.txt") == "$initial_current" ]]
 [[ -z $(command find "$fixture/builder/workdir" -maxdepth 1 -name '.build-stage.*' -print -quit) ]]
 if MALFORMED_STAGE=1 bash "$fixture/builder/build-iso" --local checkout; then
@@ -364,9 +414,14 @@ if bash "$fixture/builder/purge-iso"; then exit 1; fi
 exec {held_cache_fd}>&-
 
 : > "$PODMAN_LOG"
+: > "$PODMAN_BUILD_ID_LOG"
+: > "$PODMAN_RUN_IMAGE_LOG"
 if bash "$fixture/builder/purge-iso" unexpected; then exit 1; fi
 [[ ! -s "$PODMAN_LOG" ]]
 bash "$fixture/builder/purge-iso"
+[[ $(<"$PODMAN_BUILD_ID_LOG") == "sha256:$(printf '%064d' 1)" ]]
+[[ $(<"$PODMAN_RUN_IMAGE_LOG") == "sha256:$(printf '%064d' 1)" ]]
+[[ -z $(command find "$fixture" -maxdepth 1 -name 'blankon-purge-builder-iid.*' -print -quit) ]]
 [[ $(<"$PODMAN_LOG") == *'--userns=host'* ]]
 [[ $(<"$PODMAN_LOG") == *"$fixture/builder/workdir:/workdir:rw"* ]]
 [[ $(<"$PODMAN_LOG") == *"$fixture/builder/workdir/.package-cache.lock:/workdir/.package-cache.lock:ro"* ]]

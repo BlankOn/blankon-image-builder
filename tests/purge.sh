@@ -74,8 +74,18 @@ cat > "$test_root/bin/podman" <<'EOF'
 #!/usr/bin/env bash
 case "$1" in
   info) [[ "${TEST_PODMAN_ROOTFUL:-0}" == 1 ]] && printf 'false\n' || printf 'true\n' ;;
-  build) printf 'build:%s\n' "$*" >> "$TEST_PURGE_PODMAN_LOG" ;;
+  build)
+    build_arguments="$*"
+    iidfile=
+    while (($#)); do
+      if [[ "$1" == --iidfile ]]; then iidfile=$2; shift 2; else shift; fi
+    done
+    [[ -n "$iidfile" ]] || exit 35
+    printf 'sha256:%064d\n' 1 > "$iidfile"
+    printf 'build:%s\n' "$build_arguments" >> "$TEST_PURGE_PODMAN_LOG"
+    ;;
   run)
+    [[ " $* " == *" sha256:$(printf '%064d' 1) /usr/local/bin/purge-iso "* ]] || exit 36
     [[ " $* " == *' --userns=host '* ]] || exit 31
     [[ " $* " == *'/workdir:rw'* ]] || exit 32
     [[ " $* " == *'/.package-cache.lock:/workdir/.package-cache.lock:ro'* ]] || exit 33
@@ -91,9 +101,10 @@ if TEST_PODMAN_ROOTFUL=1 env -u BUILDER_CONTAINER bash "$scripts_dir/purge-iso";
   exit 1
 fi
 [[ ! -e "$TEST_PURGE_PODMAN_LOG" ]]
-TEST_PODMAN_ROOTFUL=0 env -u BUILDER_CONTAINER bash "$scripts_dir/purge-iso"
+TEST_PODMAN_ROOTFUL=0 TMPDIR="$test_root" env -u BUILDER_CONTAINER bash "$scripts_dir/purge-iso"
 [[ $(<"$TEST_PURGE_PODMAN_LOG") == $'build:build '*$'run:run '* ]]
 [[ $(<"$TEST_PURGE_PODMAN_LOG") != *"$test_root/local"* ]]
 [[ $(<"$TEST_PURGE_PODMAN_LOG") != *"$BUILD_JAHITAN_PATH"* ]]
+[[ -z $(command find "$test_root" -maxdepth 1 -name 'blankon-purge-builder-iid.*' -print -quit) ]]
 
 echo 'Purge ISO smoke checks passed.'

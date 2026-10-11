@@ -205,6 +205,17 @@ git -C "$source_dir" -c commit.gpgsign=false -c user.name=CI -c user.email=ci@ex
 
 bash "$scripts_dir/build-iso" --remote "$source_dir" ci-smoke "$pinned_commit"
 remote_output="$BUILD_JAHITAN_PATH/$(<"$BUILD_JAHITAN_PATH/current/current.txt")"
+remote_clone=$(find tmp -mindepth 1 -maxdepth 1 -type d -print -quit)
+[[ -n "$remote_clone" ]]
+[[ $(stat -c '%a' tmp) == 700 ]]
+[[ $(stat -c '%a' "$remote_clone") == 700 ]]
+[[ $(stat -c '%u:%g' tmp) == "$(id -u):$(id -g)" ]]
+[[ $(stat -c '%u:%g' "$remote_clone") == "$(id -u):$(id -g)" ]]
+[[ -r "$remote_output/$image_name.hybrid.iso" ]]
+[[ $(stat -c '%a' "$remote_output/$image_name.hybrid.iso") != 600 ]]
+for stage in bootstrap chroot binary; do
+  [[ -n $(find "$cache_root" -path "*/packages.$stage/fixture.deb" -print -quit) ]]
+done
 [[ $(<.build/config/variant-marker) == 'variant fixture' ]]
 [[ $(<"$remote_output/$image_name.build.log.txt") == *'fake lb stdout marker'* ]]
 [[ $(<"$remote_output/$image_name.build.log.txt") == *'fake lb stderr marker'* ]]

@@ -974,23 +974,38 @@ build_local_image() {
 
 prepare_remote_source() {
   echo "Processing $REPO $BRANCH $COMMIT ..."
-  mkdir -p tmp || true
-  chmod -R a+rw tmp
+  local previous_umask
+  previous_umask=$(umask)
+  umask 077
+  if [[ -L tmp || ( -e tmp && ! -d tmp ) ]]; then
+    umask "$previous_umask"
+    FAILURE_REASON="Error: Remote source tmp path is not a safe directory"
+    exit 1
+  fi
+  if ! mkdir -p tmp || ! chmod 700 tmp; then
+    umask "$previous_umask"
+    FAILURE_REASON="Error: Failed to prepare remote source tmp directory"
+    exit 1
+  fi
 
   if ! git clone -b "$BRANCH" "$REPO" "./tmp/$TODAY-$TODAY_COUNT" 2>&1; then
+    umask "$previous_umask"
     FAILURE_REASON="Error: Failed to clone $REPO branch $BRANCH"
     exit 1
   fi
   if [[ ! -d "./tmp/$TODAY-$TODAY_COUNT/.git" ]]; then
+    umask "$previous_umask"
     FAILURE_REASON="Error: Clone directory is missing or incomplete"
     exit 1
   fi
   if [[ -n "$COMMIT" ]] && ! git -C "./tmp/$TODAY-$TODAY_COUNT" checkout "$COMMIT"; then
+    umask "$previous_umask"
     FAILURE_REASON="Error: Failed to checkout commit $COMMIT"
     exit 1
   fi
 
   COMMIT=$(git -C "./tmp/$TODAY-$TODAY_COUNT" rev-parse --short HEAD)
+  umask "$previous_umask"
 }
 
 build_remote_image() {

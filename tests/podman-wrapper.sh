@@ -90,7 +90,51 @@ case "$1" in
       if [[ "${MALFORMED_STAGE:-0}" != 1 ]]; then
         (cd "$release" && sha256sum "$image.hybrid.iso" > "$image.hybrid.iso.sha256sum")
       fi
-      printf '{"build_result":"success"}\n' > "$release/$image.build-manifest.json"
+      python3 - "$release/$image.build-manifest.json" "$release/$image.hybrid.iso" "${MANIFEST_CASE:-valid}" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+manifest_path, iso_path = Path(sys.argv[1]), Path(sys.argv[2])
+manifest = {
+    "schema_version": 1,
+    "builder_git_sha": "0" * 40,
+    "live_source_git_sha": "unknown",
+    "live_source_status": "unavailable",
+    "oci_base_reference": "lying-base",
+    "builder_image_id": "lying-image-id",
+    "live_build_version": "fixture-live-build",
+    "debootstrap_version": "fixture-debootstrap",
+    "podman_version": "lying-podman",
+    "host_kernel": "lying-kernel",
+    "host_os": "lying-os",
+    "rootless": False,
+    "userns_mode": "lying-userns",
+    "security_profile": "lying-profile",
+    "host_selinux_state": "lying-selinux",
+    "selinux_enforcing": True,
+    "podman_selinux_enabled": False,
+    "output_sha256": hashlib.sha256(iso_path.read_bytes()).hexdigest(),
+    "build_result": "success",
+}
+case = sys.argv[3]
+if case == "malformed":
+    manifest_path.write_text("{not json")
+elif case == "schema":
+    manifest["unexpected"] = True
+    manifest_path.write_text(json.dumps(manifest))
+elif case == "revision":
+    manifest["live_source_git_sha"] = "abc"
+    manifest_path.write_text(json.dumps(manifest))
+elif case == "source-state":
+    manifest["live_source_status"] = "clean"
+    manifest_path.write_text(json.dumps(manifest))
+else:
+    if case == "digest":
+        manifest["output_sha256"] = "f" * 64
+    manifest_path.write_text(json.dumps(manifest))
+PY
     fi
     ;;
   secret) exit 82 ;;
@@ -159,6 +203,26 @@ bash "$fixture/builder/build-iso" --local checkout
 [[ $(<"$fixture/output root/20200101-1/sentinel.txt") == 'previous release sentinel' ]]
 [[ -f "$fixture/output root/current/current.txt" ]]
 [[ -s "$fixture/output root/current/blankon-live-image-fixture-amd64.build-manifest.json" ]]
+python3 - "$fixture/output root/current/blankon-live-image-fixture-amd64.build-manifest.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+manifest = json.loads(Path(sys.argv[1]).read_text())
+assert manifest["schema_version"] == 1
+assert manifest["builder_git_sha"] == "unknown"
+assert manifest["oci_base_reference"].startswith("ghcr.io/blankon/")
+assert manifest["builder_image_id"] == "sha256:" + "0" * 63 + "1"
+assert manifest["podman_version"] == "podman version fixture"
+assert manifest["rootless"] is True
+assert manifest["userns_mode"] == "host"
+assert manifest["security_profile"] == "baseline-v1"
+assert manifest["host_selinux_state"] == "Disabled"
+assert manifest["selinux_enforcing"] is False
+assert manifest["podman_selinux_enabled"] is True
+assert manifest["host_kernel"] != "lying-kernel"
+assert manifest["host_os"] != "lying-os"
+PY
 promoted_iso="$fixture/output root/$(<"$fixture/output root/current/current.txt")/blankon-live-image-fixture-amd64.hybrid.iso"
 (cd "$(dirname -- "$promoted_iso")" && sha256sum -c blankon-live-image-fixture-amd64.hybrid.iso.sha256sum)
 [[ -z $(command find "$fixture/builder/workdir" -maxdepth 1 -name '.build-stage.*' -print -quit) ]]
@@ -261,6 +325,13 @@ if MALFORMED_STAGE=1 bash "$fixture/builder/build-iso" --local checkout; then
 fi
 [[ $(<"$fixture/output root/current/current.txt") == "$initial_current" ]]
 [[ -z $(command find "$fixture/output root" -maxdepth 1 -name '.build-stage.*' -print -quit) ]]
+for manifest_case in malformed schema revision source-state digest; do
+  if MANIFEST_CASE="$manifest_case" bash "$fixture/builder/build-iso" --local checkout; then
+    printf 'Error: Invalid staged manifest case %s was accepted.\n' "$manifest_case" >&2
+    exit 1
+  fi
+  [[ $(<"$fixture/output root/current/current.txt") == "$initial_current" ]]
+done
 
 : > "$PODMAN_LOG"
 if CURL_FAIL=1 bash "$fixture/builder/build-iso" --local checkout; then

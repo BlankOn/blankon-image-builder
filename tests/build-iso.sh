@@ -42,6 +42,7 @@ manifest_path = Path(sys.argv[1])
 manifest_text = manifest_path.read_text()
 manifest = json.loads(manifest_text)
 assert set(manifest) == {
+    "schema_version",
     "builder_git_sha",
     "live_source_git_sha",
     "live_source_status",
@@ -61,6 +62,7 @@ assert set(manifest) == {
     "output_sha256",
     "build_result",
 }
+assert manifest["schema_version"] == 1
 assert manifest["builder_git_sha"] == "fixture-builder-sha"
 assert manifest["live_source_git_sha"] == "unknown"
 assert manifest["live_source_status"] == "unavailable"

@@ -48,8 +48,13 @@ expansion or command substitution:
 Entrypoints validate path overlap, symlinks, lock type, and nested mounts. Only
 selected local source is mounted read-only; workdir is writable. The host mounts
 a fresh hidden staging directory under workdir, not the published output root,
-into the container. After validating the staged release and checksum, the host
-promotes it to a reserved dated output directory and updates `current`.
+into the container. Before promotion, the host validates the bounded JSON
+provenance manifest against its versioned schema and checks its ISO SHA-256
+claim against a host measurement. It overwrites host/runtime fields with
+independently measured host values; source revision/status and in-container
+live-build/debootstrap claims remain sourced from the build container. The host
+promotes only after validation succeeds, to a reserved dated output directory,
+and updates `current`.
 Remote clones stay under workdir; no source tree is mounted. The builder
 checkout, `.env`, and token are not passed to the container, which receives
 `BUILD_SEND_TELEGRAM=0`. Optional notification runs on the host after the
@@ -88,9 +93,9 @@ contains the builder revision, live source commit and clean/dirty/unavailable
 status, pinned OCI base reference, built image ID, in-container live-build and
 debootstrap versions, host/runtime and SELinux identifiers, output SHA-256, and
 successful build result. It excludes credentials, usernames, and full host
-paths. Unavailable inputs are identified explicitly. This provenance record
-does not establish deterministic ISO bytes or host attestation, and does not
-guarantee complete build reproducibility.
+paths. Unavailable inputs are identified explicitly. Host-side validation and
+host-field overwrite are not cryptographic attestation, do not establish
+deterministic ISO bytes, and do not guarantee byte reproducibility.
 
 - `workdir/.build`: prepared live-build tree and logs.
 - `workdir/tmp`: remote clones and transient state.

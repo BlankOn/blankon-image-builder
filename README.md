@@ -118,8 +118,10 @@ byte reproducibility.
 - `workdir/package-cache`: downloaded `.deb` files, reused by architecture and
   `archive.conf`; bootstrap/chroot filesystems start fresh.
 - `./purge-iso`: removes only the validated package cache, preserving the
-  prepared tree and published output. An absent cache is a no-op. It shares
-  `workdir/.package-cache.lock` with builds; do not purge during a build.
+  prepared tree and published output. An absent cache is a no-op after acquiring
+  `workdir/.package-cache.lock`, without requiring `.env` or invoking Podman. An
+  existing cache is removed with rootless Podman after path validation. Do not
+  purge during a build.
 
 ## Runtime boundary
 

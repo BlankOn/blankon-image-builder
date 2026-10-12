@@ -3,6 +3,38 @@ set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 fixture_init
 
+mkdir -p "$test_root/bin"
+cat > "$test_root/bin/podman" <<'EOF'
+#!/usr/bin/env bash
+printf 'unexpected Podman call: %s\n' "$*" >&2
+exit 90
+EOF
+chmod +x "$test_root/bin/podman"
+rm -f -- "$scripts_dir/.env"
+env -u BUILDER_CONTAINER -u BUILD_LOCAL PATH="$test_root/bin:$PATH" \
+  bash "$scripts_dir/purge-iso"
+
+exec {absent_cache_lock_fd}>"$scripts_dir/workdir/.package-cache.lock"
+flock -n "$absent_cache_lock_fd"
+if env -u BUILDER_CONTAINER PATH="$test_root/bin:$PATH" bash "$scripts_dir/purge-iso"; then
+  echo 'Error: purge ignored absent-cache lock contention' >&2
+  exit 1
+fi
+exec {absent_cache_lock_fd}>&-
+
+ln -s "$test_root/missing-target" "$scripts_dir/workdir/package-cache"
+if env -u BUILDER_CONTAINER PATH="$test_root/bin:$PATH" bash "$scripts_dir/purge-iso"; then
+  echo 'Error: purge accepted a dangling cache symlink' >&2
+  exit 1
+fi
+rm -- "$scripts_dir/workdir/package-cache"
+printf 'not a directory\n' > "$scripts_dir/workdir/package-cache"
+if env -u BUILDER_CONTAINER PATH="$test_root/bin:$PATH" bash "$scripts_dir/purge-iso"; then
+  echo 'Error: purge accepted a non-directory cache' >&2
+  exit 1
+fi
+rm -- "$scripts_dir/workdir/package-cache"
+
 for stage in bootstrap chroot binary; do
   mkdir -p "$cache_root/key/packages.$stage"
   printf 'cached package\n' > "$cache_root/key/packages.$stage/fixture.deb"
@@ -96,6 +128,7 @@ esac
 EOF
 chmod +x "$test_root/bin/podman"
 export TEST_PURGE_PODMAN_LOG="$test_root/purge-podman.log"
+mkdir -p "$scripts_dir/workdir/package-cache/key"
 if TEST_PODMAN_ROOTFUL=1 env -u BUILDER_CONTAINER bash "$scripts_dir/purge-iso"; then
   echo 'Error: purge accepted rootful Podman' >&2
   exit 1

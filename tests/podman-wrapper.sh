@@ -619,9 +619,12 @@ exec {held_lock_fd}>&-
 exec {held_cache_fd}>"$fixture/builder/workdir/.package-cache.lock"
 flock -n "$held_cache_fd"
 : > "$PODMAN_LOG"
+: > "$PODMAN_CALL_LOG"
 if bash "$fixture/builder/build-iso" --local checkout; then exit 1; fi
+: > "$PODMAN_CALL_LOG"
 if bash "$fixture/builder/purge-iso"; then exit 1; fi
 [[ ! -s "$PODMAN_LOG" ]]
+[[ ! -s "$PODMAN_CALL_LOG" ]]
 exec {held_cache_fd}>&-
 
 : > "$PODMAN_LOG"
@@ -629,6 +632,8 @@ exec {held_cache_fd}>&-
 : > "$PODMAN_RUN_IMAGE_LOG"
 if bash "$fixture/builder/purge-iso" unexpected; then exit 1; fi
 [[ ! -s "$PODMAN_LOG" ]]
+mkdir -p "$fixture/builder/workdir/package-cache/key"
+rm -f -- "$fixture/builder/.env"
 bash "$fixture/builder/purge-iso"
 [[ $(<"$PODMAN_BUILD_ID_LOG") == "sha256:$(printf '%064d' 1)" ]]
 [[ $(<"$PODMAN_RUN_IMAGE_LOG") == "sha256:$(printf '%064d' 1)" ]]
@@ -639,10 +644,12 @@ bash "$fixture/builder/purge-iso"
 [[ $(<"$PODMAN_LOG") != *"$fixture/source root"* && $(<"$PODMAN_LOG") != *"$fixture/output root"* && $(<"$PODMAN_LOG") != *synthetic-fixture-token* ]]
 
 : > "$PODMAN_LOG"
+: > "$PODMAN_CALL_LOG"
 if ROOTFUL=1 bash "$fixture/builder/purge-iso"; then
   printf 'Error: Rootful Podman was accepted.\n' >&2
   exit 1
 fi
 [[ ! -s "$PODMAN_LOG" ]]
+[[ $(<"$PODMAN_CALL_LOG") == 'info --format {{.Host.Security.Rootless}}' ]]
 
 printf 'Direct Podman host entrypoint fixtures passed.\n'

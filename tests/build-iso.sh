@@ -212,7 +212,7 @@ rm -- "$source_dir/untracked-local"
 printf 'branch tip\n' > "$source_dir/config/smoke/variant-marker"
 git -C "$source_dir" -c commit.gpgsign=false -c user.name=CI -c user.email=ci@example.invalid commit -qam tip
 
-bash "$scripts_dir/build-iso" --remote "$source_dir" ci-smoke "$pinned_commit"
+(umask 077; bash "$scripts_dir/build-iso" --remote "$source_dir" ci-smoke "$pinned_commit")
 remote_output="$BUILD_JAHITAN_PATH/$(<"$BUILD_JAHITAN_PATH/current/current.txt")"
 remote_clone=$(find tmp -mindepth 1 -maxdepth 1 -type d -print -quit)
 [[ -n "$remote_clone" ]]
@@ -220,8 +220,10 @@ remote_clone=$(find tmp -mindepth 1 -maxdepth 1 -type d -print -quit)
 [[ $(stat -c '%a' "$remote_clone") == 700 ]]
 [[ $(stat -c '%u:%g' tmp) == "$(id -u):$(id -g)" ]]
 [[ $(stat -c '%u:%g' "$remote_clone") == "$(id -u):$(id -g)" ]]
+[[ $(stat -c '%a' .build/config/variant-marker) == 644 ]]
+[[ $(stat -c '%a' .build/auto/fixture-script) == 755 ]]
 [[ -r "$remote_output/$image_name.hybrid.iso" ]]
-[[ $(stat -c '%a' "$remote_output/$image_name.hybrid.iso") == "$expected_output_mode" ]]
+[[ $(stat -c '%a' "$remote_output/$image_name.hybrid.iso") == 600 ]]
 for stage in bootstrap chroot binary; do
   [[ -n $(find "$cache_root" -path "*/packages.$stage/fixture.deb" -print -quit) ]]
 done
@@ -278,6 +280,60 @@ if bash "$scripts_dir/build-iso" --remote "$source_dir" ci-smoke deadbeef; then
   echo 'Error: missing remote commit was accepted' >&2
   exit 1
 fi
+remote_preparation_function="$test_root/prepare-remote-source.fixture"
+python3 - "$scripts_dir/build-iso" "$remote_preparation_function" <<'PY'
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1]).read_text()
+start = source.index("prepare_remote_source() {")
+end = source.index("\nbuild_remote_image() {", start)
+Path(sys.argv[2]).write_text(source[start:end])
+PY
+for clone_path_kind in existing symlink; do
+  clone_test_root="$test_root/remote-clone-$clone_path_kind"
+  clone_release_id=20200101-88
+  clone_destination="$clone_test_root/tmp/$clone_release_id"
+  clone_git_log="$clone_test_root/git.log"
+  clone_umask_result="$clone_test_root/umask"
+  mkdir -p "$clone_test_root/tmp"
+  if [[ "$clone_path_kind" == existing ]]; then
+    mkdir "$clone_destination"
+    printf 'preserve existing clone\n' > "$clone_destination/sentinel"
+    chmod 600 "$clone_destination/sentinel"
+  else
+    symlink_clone_target="$clone_test_root/target"
+    mkdir "$symlink_clone_target"
+    printf 'preserve symlink target\n' > "$symlink_clone_target/sentinel"
+    ln -s "$symlink_clone_target" "$clone_destination"
+  fi
+  if (cd "$clone_test_root" && env GIT_LOG="$clone_git_log" UMASK_RESULT="$clone_umask_result" \
+      bash -c 'source "$1"; trap '\''umask > "$UMASK_RESULT"'\'' EXIT; umask 077; REPO=fixture REPO_NAME=fixture BRANCH=fixture COMMIT= BUILD_RELEASE_ID=20200101-88; git() { printf invoked >> "$GIT_LOG"; return 90; }; prepare_remote_source' \
+      _ "$remote_preparation_function") > "$clone_test_root/output" 2>&1; then
+    echo "Error: $clone_path_kind remote clone destination was accepted" >&2
+    exit 1
+  fi
+  [[ ! -e "$clone_git_log" ]]
+  [[ $(<"$clone_test_root/umask") == 0077 ]]
+  if [[ "$clone_path_kind" == existing ]]; then
+    [[ $(<"$clone_destination/sentinel") == 'preserve existing clone' ]]
+    [[ $(stat -c '%a' "$clone_destination/sentinel") == 600 ]]
+  else
+    [[ -L "$clone_destination" ]]
+    [[ $(readlink "$clone_destination") == "$symlink_clone_target" ]]
+    [[ $(<"$symlink_clone_target/sentinel") == 'preserve symlink target' ]]
+  fi
+done
+rev_parse_test_root="$test_root/remote-rev-parse-failure"
+mkdir -p "$rev_parse_test_root/tmp"
+if (cd "$rev_parse_test_root" && env UMASK_RESULT="$rev_parse_test_root/umask" FAILURE_RESULT="$rev_parse_test_root/failure" \
+    bash -c 'source "$1"; trap '\''umask > "$UMASK_RESULT"; printf "%s" "$FAILURE_REASON" > "$FAILURE_RESULT"'\'' EXIT; umask 077; REPO=fixture REPO_NAME=fixture BRANCH=fixture COMMIT= BUILD_RELEASE_ID=20200101-90; git() { if [[ "$1" == clone ]]; then mkdir -p "${@: -1}/.git"; return 0; fi; return 1; }; prepare_remote_source' \
+    _ "$remote_preparation_function") > "$rev_parse_test_root/output" 2>&1; then
+  echo 'Error: failed remote commit identification was accepted' >&2
+  exit 1
+fi
+[[ $(<"$rev_parse_test_root/umask") == 0077 ]]
+[[ $(<"$rev_parse_test_root/failure") == 'Error: Failed to determine cloned source commit' ]]
 [[ $(<"$BUILD_JAHITAN_PATH/current/current.txt") == "$latest_current" ]]
 
 lb_calls_before=$(wc -l < "$TEST_LB_LOG")

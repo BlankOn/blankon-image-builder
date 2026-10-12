@@ -1178,6 +1178,18 @@ prepare_remote_source() {
     exit 1
   fi
 
+  if [[ -L "./tmp/$BUILD_RELEASE_ID" || -e "./tmp/$BUILD_RELEASE_ID" ]]; then
+    umask "$previous_umask"
+    FAILURE_REASON="Error: Remote source clone path already exists or is unsafe"
+    exit 1
+  fi
+  if ! (umask 077 && mkdir "./tmp/$BUILD_RELEASE_ID" && chmod 700 "./tmp/$BUILD_RELEASE_ID"); then
+    umask "$previous_umask"
+    FAILURE_REASON="Error: Failed to prepare remote source clone directory"
+    exit 1
+  fi
+
+  umask 022
   if ! git clone -b "$BRANCH" "$REPO" "./tmp/$BUILD_RELEASE_ID" 2>&1; then
     umask "$previous_umask"
     FAILURE_REASON="Error: Failed to clone $REPO branch $BRANCH"
@@ -1194,7 +1206,11 @@ prepare_remote_source() {
     exit 1
   fi
 
-  COMMIT=$(git -C "./tmp/$BUILD_RELEASE_ID" rev-parse --short HEAD)
+  if ! COMMIT=$(git -C "./tmp/$BUILD_RELEASE_ID" rev-parse --short HEAD); then
+    umask "$previous_umask"
+    FAILURE_REASON="Error: Failed to determine cloned source commit"
+    exit 1
+  fi
   umask "$previous_umask"
 }
 

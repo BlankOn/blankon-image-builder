@@ -26,6 +26,8 @@ fixture_init() {
   printf '<svg>BUILD_NUMBER</svg>\n' > "$source_dir/config/common/bootloaders/syslinux_common/splash.svg"
   printf 'variant fixture\n' > "$source_dir/config/smoke/variant-marker"
   printf 'auto fixture\n' > "$source_dir/auto/.fixture"
+  printf '#!/bin/sh\nexit 0\n' > "$source_dir/auto/fixture-script"
+  chmod 755 "$source_dir/auto/fixture-script"
 
   cat > "$test_root/bin/cp" <<'EOF'
 #!/usr/bin/env bash

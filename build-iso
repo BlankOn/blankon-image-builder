@@ -544,6 +544,23 @@ validate_host_configuration() {
   fi
 }
 
+validate_host_dependencies() {
+  local program missing_programs=""
+  local -a required_programs=(env realpath find findmnt flock sha256sum stat mktemp cp mv rm rmdir mkdir chmod date basename wc python3 podman)
+  if [[ "$BUILD_SEND_TELEGRAM" == 1 ]]; then
+    required_programs+=(curl)
+  fi
+  for program in "${required_programs[@]}"; do
+    if ! command -v "$program" >/dev/null 2>&1; then
+      missing_programs+=" $program"
+    fi
+  done
+  if [[ -n "$missing_programs" ]]; then
+    echo "Error: Missing required host program(s): ${missing_programs# }. Install the listed host utilities and retry." >&2
+    return 1
+  fi
+}
+
 paths_overlap() {
   [[ "$1" == "$2" || "$1" == "$2/"* || "$2" == "$1/"* || "$1" == / || "$2" == / ]]
 }
@@ -975,6 +992,7 @@ run_host_podman_build() {
   validate_host_arguments "$@" || return $?
   validate_podman_experiment || return $?
   load_host_configuration || return $?
+  validate_host_dependencies || return $?
   validate_host_configuration || return $?
   validate_host_paths "$@" || return $?
   acquire_host_locks || return $?

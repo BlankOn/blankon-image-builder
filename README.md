@@ -9,7 +9,10 @@ private `.env` beside `build-iso`.
 - Linux, rootless Podman, and enabled unprivileged user namespaces.
 - `newuidmap` and `newgidmap`, with at least 65,536 subordinate UIDs and GIDs
   assigned to the caller in `/etc/subuid` and `/etc/subgid`.
-- Host Bash, coreutils, util-linux; Python 3/curl for notifications.
+- Host Bash, coreutils, findutils, util-linux, and Python 3. These are required
+  for host-side configuration, locking, filesystem checks, and manifest
+  validation. Rootless Podman is required for builds. Install `curl` only when
+  `BUILD_SEND_TELEGRAM=1` enables notifications.
 - Writable workdir and output directories; readable local source beneath
   `BUILD_LOCAL` for local builds.
 

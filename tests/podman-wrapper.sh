@@ -190,6 +190,7 @@ export PODMAN_RELEASE_ID_LOG="$fixture/podman-release-ids.log"
 export PODMAN_USERNS=keep-id
 export TMPDIR="$fixture"
 
+
 BUILD_RELEASE_ID=../../untrusted bash "$fixture/builder/build-iso" --local checkout
 [[ $(<"$PODMAN_LOG") == *'--userns=host'* ]]
 [[ $(<"$PODMAN_LOG") == *"$fixture/source root/checkout:$fixture/source root/checkout:ro"* ]]
@@ -322,6 +323,53 @@ RACE_MARKER="$fixture/race-marker" RACE_TAG_PATH="$fixture/race-tag" PODMAN_RUN_
 [[ -e "$fixture/race-marker" ]]
 [[ -z $(command find "$fixture" -maxdepth 1 -name 'blankon-builder-iid.*' -print -quit) ]]
 initial_current=$(<"$fixture/output root/current/current.txt")
+
+make_restricted_path() {
+  local destination="$1" missing_program="$2" program resolved
+  mkdir -p "$destination"
+  for program in bash dirname env realpath find findmnt flock sha256sum stat mktemp cp mv rm rmdir mkdir chmod date basename wc python3 podman curl; do
+    [[ "$program" != "$missing_program" ]] || continue
+    resolved=$(type -P "$program") || continue
+    ln -s "$resolved" "$destination/$program"
+  done
+}
+
+podman_calls_before_dependency_checks=$(<"$PODMAN_CALL_LOG")
+for missing_program in python3 curl findmnt; do
+  restricted_path="$fixture/path-without-$missing_program"
+  make_restricted_path "$restricted_path" "$missing_program"
+  if PATH="$restricted_path" bash "$fixture/builder/build-iso" --local checkout >"$fixture/missing-$missing_program-output" 2>&1; then
+    printf 'Error: Build accepted missing host program %s.\n' "$missing_program" >&2
+    exit 1
+  fi
+  [[ $(<"$fixture/missing-$missing_program-output") == *"Missing required host program(s): $missing_program"* ]]
+  [[ $(<"$PODMAN_CALL_LOG") == "$podman_calls_before_dependency_checks" ]]
+  [[ $(<"$fixture/output root/current/current.txt") == "$initial_current" ]]
+  [[ -z $(command find "$fixture/output root" -maxdepth 1 -name '.build-stage.*' -print -quit) ]]
+done
+
+cat > "$fixture/builder/.env" <<EOF
+BUILD_LOCAL="$fixture/source root"
+BUILD_LOCKFILE="$fixture/locks/build lock"
+BUILD_JAHITAN_PATH="$fixture/output root"
+BUILD_PUBLISH_URL=https://example.invalid/iso
+BUILD_SEND_TELEGRAM=0
+EOF
+restricted_path="$fixture/path-without-curl-disabled"
+make_restricted_path "$restricted_path" curl
+: > "$PODMAN_LOG"
+PATH="$restricted_path" bash "$fixture/builder/build-iso" --local checkout
+[[ $(<"$PODMAN_LOG") == *'run'* ]]
+[[ $(<"$fixture/output root/current/current.txt") != "$initial_current" ]]
+initial_current=$(<"$fixture/output root/current/current.txt")
+cat > "$fixture/builder/.env" <<EOF
+BUILD_LOCAL="$fixture/source root"
+BUILD_LOCKFILE="$fixture/locks/build lock"
+BUILD_JAHITAN_PATH="$fixture/output root"
+BUILD_PUBLISH_URL=https://example.invalid/iso
+TELEGRAM_BOT_KEY=synthetic-fixture-token
+BUILD_SEND_TELEGRAM=1
+EOF
 
 : > "$PODMAN_LOG"
 : > "$PODMAN_CALL_LOG"

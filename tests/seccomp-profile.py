@@ -8,6 +8,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PodmanSecurityTests(unittest.TestCase):
+    def test_builder_keeps_python_without_image_time_live_build_rewriting(self):
+        dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("        python3 \\\n", dockerfile)
+        self.assertNotIn("patch-live-build-sysfs.py", dockerfile)
+        self.assertIn("apply --whitespace=error", dockerfile)
+
     def test_build_and_purge_keep_rootless_identity_mapping(self):
         for filename in ("build-iso", "purge-iso"):
             with self.subTest(filename=filename):

@@ -21,9 +21,12 @@ Run as the user owning the rootless Podman engine. Verify with
 install/configure Podman, edit subordinate-ID files, or alter global host
 configuration.
 
-The image build automatically applies the live-build sysfs compatibility patch.
-Users do not need to run the helper or patch their host; rootless Podman's host
-requirements still need to be satisfied.
+The builder image compiles and installs a normal `live-build` Debian package
+from pinned upstream commit
+`531cdb9854e04d08c3c3770463454d8a5e91b129`. Its source patch recursively
+unmounts the chroot sysfs tree during teardown while preserving upstream's
+sysfs mount and recursive-bind fallback. This does not change the host's
+rootless Podman requirements.
 
 Keep the builder and live-build checkouts as siblings beneath `BUILD_LOCAL`:
 

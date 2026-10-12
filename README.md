@@ -41,9 +41,13 @@ expansion or command substitution:
   a symlink or non-regular existing file, or overlap workdir, output, or source.
   It may be outside `BUILD_LOCAL` and is flocked on the host, never mounted.
 - `BUILD_PUBLISH_URL`: base URL for published artifacts and zsync metadata.
-- `BUILD_SEND_TELEGRAM`: optional; defaults to enabled, set `0` to disable.
+- `BUILD_SEND_TELEGRAM`: optional; defaults to disabled. Set `1` to opt in or `0` to disable.
 - `TELEGRAM_BOT_KEY`: optional Telegram token, needed only when notifications
   are enabled. Keep `.env` private and untracked.
+- `TELEGRAM_CHAT_ID`: optional nonzero signed integer; defaults to
+  `-1001067745576` when notifications are enabled.
+- `TELEGRAM_MESSAGE_THREAD_ID`: optional positive integer; defaults to `51909`
+  when notifications are enabled.
 
 Entrypoints validate path overlap, symlinks, lock type, and nested mounts. Only
 selected local source is mounted read-only; workdir is writable. The host mounts
@@ -58,8 +62,14 @@ and updates `current`.
 Remote clones stay under workdir; no source tree is mounted. The builder
 checkout, `.env`, and token are not passed to the container, which receives
 `BUILD_SEND_TELEGRAM=0`. Optional notification runs on the host after the
-container exits. Rootless mapping keeps generated files owned by the invoking
-UID/GID, including after failed builds.
+container exits. Notifications are disabled when `BUILD_SEND_TELEGRAM` is
+absent; existing configurations that explicitly set `1` remain enabled.
+Notification delivery is best-effort: a
+failure prints a credential-free warning and does not change the build exit
+status or published output. Curl uses a 10-second connect timeout and a
+30-second total timeout without retries; the token is delivered through stdin
+configuration, not process arguments or environment. Rootless mapping keeps
+generated files owned by the invoking UID/GID, including after failed builds.
 
 ## Build and maintenance
 

@@ -456,9 +456,10 @@ load_host_configuration() {
     echo "Error: Environment file not found: $env_file" >&2
     return 1
   fi
-  BUILD_LOCAL= BUILD_LOCKFILE= BUILD_JAHITAN_PATH= BUILD_PUBLISH_URL= TELEGRAM_BOT_KEY= BUILD_SEND_TELEGRAM=1
+  BUILD_LOCAL= BUILD_LOCKFILE= BUILD_JAHITAN_PATH= BUILD_PUBLISH_URL= TELEGRAM_BOT_KEY= BUILD_SEND_TELEGRAM=0
+  TELEGRAM_CHAT_ID=-1001067745576 TELEGRAM_MESSAGE_THREAD_ID=51909
   while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ "$line" =~ ^[[:space:]]*(BUILD_LOCAL|BUILD_LOCKFILE|BUILD_JAHITAN_PATH|BUILD_PUBLISH_URL|TELEGRAM_BOT_KEY|BUILD_SEND_TELEGRAM)=(.*)$ ]] || continue
+    [[ "$line" =~ ^[[:space:]]*(BUILD_LOCAL|BUILD_LOCKFILE|BUILD_JAHITAN_PATH|BUILD_PUBLISH_URL|TELEGRAM_BOT_KEY|BUILD_SEND_TELEGRAM|TELEGRAM_CHAT_ID|TELEGRAM_MESSAGE_THREAD_ID)=(.*)$ ]] || continue
     name=${BASH_REMATCH[1]}
     value=${BASH_REMATCH[2]}
     seen_name="${name}_SEEN"
@@ -490,6 +491,18 @@ load_host_configuration() {
       BUILD_SEND_TELEGRAM)
         if [[ "$value" != 0 && "$value" != 1 ]]; then
           echo 'Error: BUILD_SEND_TELEGRAM must be 0 or 1.' >&2
+          return 1
+        fi
+        ;;
+      TELEGRAM_CHAT_ID)
+        if [[ ! "$value" =~ ^-?[1-9][0-9]*$ ]]; then
+          echo 'Error: TELEGRAM_CHAT_ID must be a signed nonzero integer.' >&2
+          return 1
+        fi
+        ;;
+      TELEGRAM_MESSAGE_THREAD_ID)
+        if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
+          echo 'Error: TELEGRAM_MESSAGE_THREAD_ID must be a positive integer.' >&2
           return 1
         fi
         ;;
@@ -952,10 +965,7 @@ notify_host_build_result() {
     fi
     send_host_telegram "$message" || notification_status=$?
     if (( notification_status != 0 )); then
-      echo 'Error: Build notification failed.' >&2
-      if (( build_status == 0 )); then
-        build_status=1
-      fi
+      echo 'Warning: Build notification failed; build result and published output are unchanged.' >&2
     fi
   fi
   return "$build_status"
@@ -987,29 +997,33 @@ cleanup_host_build() {
 }
 
 send_host_telegram() {
-  local message="$1" token
+  local message="$1" token chat_id thread_id
   token=$TELEGRAM_BOT_KEY
   [[ -n "$token" ]] || return 1
-  printf '%s\n%s' "$token" "$message" | python3 -c '
+  chat_id=${TELEGRAM_CHAT_ID:--1001067745576}
+  thread_id=${TELEGRAM_MESSAGE_THREAD_ID:-51909}
+  printf '%s\n%s\n%s\n%s' "$token" "$message" "$chat_id" "$thread_id" | python3 -c '
 import html
 import json
 import sys
 
 token = sys.stdin.readline().rstrip("\n")
 message = html.escape(sys.stdin.read(), quote=True)
+message, chat_id, thread_id = message.rsplit("\n", 2)
 payload = {
-    "chat_id": "-1001067745576",
-    "message_thread_id": 51909,
+    "chat_id": int(chat_id),
     "parse_mode": "HTML",
     "disable_web_page_preview": True,
     "text": message,
     "disable_notification": True,
 }
+if thread_id:
+    payload["message_thread_id"] = int(thread_id)
 print("url = " + json.dumps("https://api.telegram.org/bot" + token + "/sendMessage"))
 print("request = \"POST\"")
 print("header = \"Content-Type: application/json\"")
 print("data = " + json.dumps(json.dumps(payload)))
-' | env -u TELEGRAM_BOT_KEY -u TELEGRAM_BOT_KEY_FILE curl --silent --fail --output /dev/null --config - 2>/dev/null
+' | env -u TELEGRAM_BOT_KEY -u TELEGRAM_BOT_KEY_FILE curl --silent --fail --output /dev/null --connect-timeout 10 --max-time 30 --config - 2>/dev/null
 }
 
 acquire_build_lock() {

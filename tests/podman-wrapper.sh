@@ -171,6 +171,7 @@ cat > "$fixture/bin/curl" <<'SH'
 printf '%s\n' "$*" > "$CURL_ARGUMENTS"
 request_config=$(</dev/stdin)
 printf '%s\n' "$request_config" >> "$CURL_CONFIG"
+[[ " $* " == *' --connect-timeout 10 '* && " $* " == *' --max-time 30 '* ]]
 [[ "${TELEGRAM_BOT_KEY:-}" != synthetic-fixture-token ]]
 [[ "${CURL_FAIL:-0}" != 1 ]]
 SH
@@ -262,7 +263,7 @@ payload = json.loads(json.loads(fields["data"]))
 assert url.endswith("/sendMessage")
 assert "synthetic-fixture-token" in url
 assert {key: value for key, value in payload.items() if key != "text"} == {
-    "chat_id": "-1001067745576",
+    "chat_id": -1001067745576,
     "message_thread_id": 51909,
     "parse_mode": "HTML",
     "disable_web_page_preview": True,
@@ -369,12 +370,12 @@ fi
 [[ $(<"$fixture/output root/20200101-1/sentinel.txt") == 'previous release sentinel' ]]
 
 : > "$PODMAN_LOG"
-if CURL_FAIL=1 bash "$fixture/builder/build-iso" --local checkout; then
-  printf 'Error: Notification transport failure was accepted.\n' >&2
-  exit 1
-fi
+published_before_notification_failure=$(<"$fixture/output root/current/current.txt")
+CURL_FAIL=1 bash "$fixture/builder/build-iso" --local checkout >"$fixture/notification-failure-output" 2>&1
 [[ $(<"$PODMAN_LOG") == *'run'* ]]
 [[ $(<"$PODMAN_LOG") != *synthetic-fixture-token* ]]
+[[ $(<"$fixture/output root/current/current.txt") != "$published_before_notification_failure" ]]
+[[ $(<"$fixture/notification-failure-output") == *'Warning: Build notification failed'* ]]
 
 : > "$CURL_CONFIG"
 if RUN_FAIL=1 bash "$fixture/builder/build-iso" --local checkout; then exit 1; fi
@@ -396,11 +397,45 @@ BUILD_LOCAL="$fixture/source root"
 BUILD_LOCKFILE="$fixture/locks/build lock"
 BUILD_JAHITAN_PATH="$fixture/output root"
 BUILD_PUBLISH_URL=https://example.invalid/iso
-BUILD_SEND_TELEGRAM=0
 EOF
 : > "$CURL_CONFIG"
 bash "$fixture/builder/build-iso" --remote repo branch
-  [[ ! -s "$CURL_CONFIG" ]]
+[[ ! -s "$CURL_CONFIG" ]]
+
+cat >> "$fixture/builder/.env" <<'EOF'
+TELEGRAM_BOT_KEY=synthetic-fixture-token
+BUILD_SEND_TELEGRAM=1
+TELEGRAM_CHAT_ID=-123456
+TELEGRAM_MESSAGE_THREAD_ID=42
+EOF
+: > "$CURL_CONFIG"
+bash "$fixture/builder/build-iso" --local checkout
+python3 - "$CURL_CONFIG" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+fields = dict(line.split(" = ", 1) for line in Path(sys.argv[1]).read_text().splitlines())
+payload = json.loads(json.loads(fields["data"]))
+assert payload["chat_id"] == -123456
+assert type(payload["chat_id"]) is int
+assert payload["message_thread_id"] == 42
+assert type(payload["message_thread_id"]) is int
+PY
+for invalid_assignment in 'TELEGRAM_CHAT_ID=0' 'TELEGRAM_CHAT_ID=secret123' 'TELEGRAM_MESSAGE_THREAD_ID=0' 'TELEGRAM_MESSAGE_THREAD_ID=secret123'; do
+  sed -i '/^TELEGRAM_CHAT_ID=/d; /^TELEGRAM_MESSAGE_THREAD_ID=/d' "$fixture/builder/.env"
+  printf '%s\n' "$invalid_assignment" >> "$fixture/builder/.env"
+  if bash "$fixture/builder/build-iso" --local checkout >"$fixture/invalid-notification-id-output" 2>&1; then exit 1; fi
+  [[ $(<"$fixture/invalid-notification-id-output") != *synthetic-fixture-token* && $(<"$fixture/invalid-notification-id-output") != *secret123* ]]
+done
+
+cat > "$fixture/builder/.env" <<EOF
+BUILD_LOCAL="$fixture/source root"
+BUILD_LOCKFILE="$fixture/locks/build lock"
+BUILD_JAHITAN_PATH="$fixture/output root"
+BUILD_PUBLISH_URL=https://example.invalid/iso
+BUILD_SEND_TELEGRAM=0
+EOF
 
 sed -i "s#BUILD_LOCKFILE=.*#BUILD_LOCKFILE=\"$fixture/source root/.build.lock\"#" "$fixture/builder/.env"
 bash "$fixture/builder/build-iso" --local checkout

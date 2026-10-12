@@ -251,7 +251,8 @@ def read_boolean(name):
     return True if value == "true" else False if value == "false" else None
 
 manifest = {
-    "schema_version": 1,
+    "schema_version": 2,
+    "release_id": os.environ["BUILD_RELEASE_ID"],
     "builder_git_sha": os.environ.get("BUILD_BUILDER_GIT_SHA", "unknown"),
     "live_source_git_sha": os.environ.get("LIVE_SOURCE_GIT_SHA", "unknown"),
     "live_source_status": os.environ.get("LIVE_SOURCE_STATUS", "unavailable"),
@@ -717,6 +718,7 @@ run_podman_build() {
     --env "BUILD_LOCAL=$container_build_local"
     --env BUILD_JAHITAN_PATH=/build-output
     --env BUILD_PUBLISH_STAGING_ONLY=1
+    --env "BUILD_RELEASE_ID=$BUILD_RELEASE_ID"
     --env "BUILD_PUBLISH_URL=$BUILD_PUBLISH_URL"
     --env "BUILD_BUILDER_GIT_SHA=$builder_git_sha"
     --env "BUILD_BUILDER_IMAGE_ID=$builder_image_id"
@@ -748,7 +750,7 @@ run_podman_build() {
     local staged_release staged_name staged_file image_name checksum_line checksum_hash checksum_output manifest_size
     while IFS= read -r -d '' staged_file; do stage_children+=("$staged_file"); done < <(find "$stage_dir" -mindepth 1 -maxdepth 1 -print0)
     if (( ${#stage_children[@]} != 1 )) || [[ ! -d "${stage_children[0]:-}" || -L "${stage_children[0]:-}" ]] || \
-       [[ ! "$(basename -- "${stage_children[0]:-}")" =~ ^[0-9]{8}-[1-9][0-9]*$ ]]; then
+       [[ "$(basename -- "${stage_children[0]:-}")" != "$BUILD_RELEASE_ID" ]]; then
       echo 'Error: Build stage must contain exactly one dated release directory.' >&2
       build_status=1
     else
@@ -796,6 +798,7 @@ run_podman_build() {
             if (( build_status == 0 )) && (( manifest_size > 1048576 )); then build_status=1; fi
           fi
           if (( build_status == 0 )); then
+            BUILD_VALIDATED_RELEASE_ID="$BUILD_RELEASE_ID" \
             BUILD_VALIDATED_MANIFEST="${staged_manifests[0]}" \
             BUILD_VALIDATED_ISO="${staged_isos[0]}" \
             BUILD_VALIDATED_BUILDER_GIT_SHA="$builder_git_sha" \
@@ -822,7 +825,7 @@ from pathlib import Path
 manifest_path = Path(os.environ["BUILD_VALIDATED_MANIFEST"])
 iso_path = Path(os.environ["BUILD_VALIDATED_ISO"])
 fields = {
-    "schema_version", "builder_git_sha", "live_source_git_sha", "live_source_status",
+    "schema_version", "release_id", "builder_git_sha", "live_source_git_sha", "live_source_status",
     "oci_base_reference", "builder_image_id", "live_build_version", "debootstrap_version",
     "podman_version", "host_kernel", "host_os", "rootless", "userns_mode",
     "security_profile", "host_selinux_state", "selinux_enforcing",
@@ -845,12 +848,14 @@ try:
     data = json.loads(raw, object_pairs_hook=unique_object)
     if type(data) is not dict or set(data) != fields:
         raise ValueError("manifest fields do not match schema")
-    if type(data["schema_version"]) is not int or data["schema_version"] != 1:
+    if type(data["schema_version"]) is not int or data["schema_version"] != 2:
         raise ValueError("unsupported manifest schema")
     strings = fields - {"schema_version", "rootless", "selinux_enforcing", "podman_selinux_enabled", "output_sha256"}
     for key in strings:
         if type(data[key]) is not str:
             raise ValueError("invalid string field: " + key)
+    if not re.fullmatch(r"[0-9]{8}-[1-9][0-9]*", data["release_id"]) or data["release_id"] != os.environ["BUILD_VALIDATED_RELEASE_ID"]:
+        raise ValueError("manifest release identifier mismatch")
     if data["live_source_status"] not in {"clean", "dirty", "unavailable"} or data["build_result"] != "success":
         raise ValueError("invalid manifest enum")
     for key in ("builder_git_sha", "live_source_git_sha"):
@@ -907,11 +912,7 @@ PY
         fi
       fi
       if (( build_status == 0 )); then
-        TODAY=${staged_name%-*}
-        TODAY_COUNT=${staged_name##*-}
-        if ! prepare_output_directory; then
-          build_status=1
-        elif ! cp -a -- "$staged_release/." "$TARGET_DIR/"; then
+        if ! cp -a -- "$staged_release/." "$TARGET_DIR/"; then
           echo 'Error: Failed to promote staged build artifacts.' >&2
           rm -f -- "$TARGET_DIR"/*.build-manifest.json || echo 'Error: Failed to remove unpublished build manifest.' >&2
           rm -rf -- "$TARGET_DIR" || echo 'Error: Failed to remove partial promoted output.' >&2
@@ -924,6 +925,8 @@ PY
           echo 'Error: Failed to update current Jahitan artifacts.' >&2
           rm -rf -- "$TARGET_DIR" || echo 'Error: Failed to remove unpublished release directory.' >&2
           build_status=1
+        else
+          BUILD_RELEASE_PUBLISHED=1
         fi
       fi
       (( build_status == 0 )) || echo 'Error: Build stage validation failed; published current was not changed.' >&2
@@ -965,15 +968,22 @@ run_host_podman_build() {
   validate_host_configuration || return $?
   validate_host_paths "$@" || return $?
   acquire_host_locks || return $?
-  trap cleanup_builder_iid_file EXIT
-  if ! mkdir -p -- "$BUILD_JAHITAN_PATH"; then
-    return 1
-  fi
+  unset BUILD_RELEASE_ID BUILD_RELEASE_PUBLISHED BUILD_PUBLISH_STAGING_ONLY
+  prepare_output_directory || return $?
+  HOST_RESERVED_RELEASE_DIR=$TARGET_DIR
+  trap cleanup_host_build EXIT
   build_builder_image || return $?
   local mode="$1" build_status=0
   shift
   run_podman_build "$BUILDER_IMAGE_ID" "$mode" "$@" || build_status=$?
   notify_host_build_result "$mode" "$build_status" "$@"
+}
+
+cleanup_host_build() {
+  cleanup_builder_iid_file
+  if [[ -n "${HOST_RESERVED_RELEASE_DIR:-}" && "${BUILD_RELEASE_PUBLISHED:-}" != 1 ]]; then
+    rmdir -- "$HOST_RESERVED_RELEASE_DIR" 2>/dev/null || true
+  fi
 }
 
 send_host_telegram() {
@@ -1019,12 +1029,29 @@ prepare_output_directory() {
     return 1
   fi
 
+  if [[ "${BUILD_PUBLISH_STAGING_ONLY:-}" == 1 ]]; then
+    if [[ ! "${BUILD_RELEASE_ID:-}" =~ ^[0-9]{8}-[1-9][0-9]*$ ]]; then
+      FAILURE_REASON='Error: Invalid staged release ID'
+      return 1
+    fi
+    TODAY=${BUILD_RELEASE_ID%-*}
+    TODAY_COUNT=${BUILD_RELEASE_ID##*-}
+    TARGET_DIR="$BUILD_JAHITAN_PATH/$BUILD_RELEASE_ID"
+    if ! mkdir -- "$TARGET_DIR"; then
+      FAILURE_REASON="Error: Cannot create staged build output directory: $TARGET_DIR"
+      return 1
+    fi
+    return 0
+  fi
+
   TODAY=$(date '+%Y%m%d')
   TODAY_COUNT=$(find "$BUILD_JAHITAN_PATH" -mindepth 1 -maxdepth 1 -type d -name "$TODAY-*" | wc -l)
   TODAY_COUNT=$((TODAY_COUNT + 1))
   while :; do
     TARGET_DIR="$BUILD_JAHITAN_PATH/$TODAY-$TODAY_COUNT"
     if mkdir "$TARGET_DIR" 2>/dev/null; then
+      BUILD_RELEASE_ID="$TODAY-$TODAY_COUNT"
+      export BUILD_RELEASE_ID
       break
     fi
     if [[ -e "$TARGET_DIR" || -L "$TARGET_DIR" ]]; then
@@ -1119,33 +1146,33 @@ prepare_remote_source() {
     exit 1
   fi
 
-  if ! git clone -b "$BRANCH" "$REPO" "./tmp/$TODAY-$TODAY_COUNT" 2>&1; then
+  if ! git clone -b "$BRANCH" "$REPO" "./tmp/$BUILD_RELEASE_ID" 2>&1; then
     umask "$previous_umask"
     FAILURE_REASON="Error: Failed to clone $REPO branch $BRANCH"
     exit 1
   fi
-  if [[ ! -d "./tmp/$TODAY-$TODAY_COUNT/.git" ]]; then
+  if [[ ! -d "./tmp/$BUILD_RELEASE_ID/.git" ]]; then
     umask "$previous_umask"
     FAILURE_REASON="Error: Clone directory is missing or incomplete"
     exit 1
   fi
-  if [[ -n "$COMMIT" ]] && ! git -C "./tmp/$TODAY-$TODAY_COUNT" checkout "$COMMIT"; then
+  if [[ -n "$COMMIT" ]] && ! git -C "./tmp/$BUILD_RELEASE_ID" checkout "$COMMIT"; then
     umask "$previous_umask"
     FAILURE_REASON="Error: Failed to checkout commit $COMMIT"
     exit 1
   fi
 
-  COMMIT=$(git -C "./tmp/$TODAY-$TODAY_COUNT" rev-parse --short HEAD)
+  COMMIT=$(git -C "./tmp/$BUILD_RELEASE_ID" rev-parse --short HEAD)
   umask "$previous_umask"
 }
 
 build_remote_image() {
   prepare_remote_source
-  prepare_build_tree "./tmp/$TODAY-$TODAY_COUNT" || exit 1
+  prepare_build_tree "./tmp/$BUILD_RELEASE_ID" || exit 1
   local cache_key
   cd .build || exit 1
   if [[ -f config/bootloaders/syslinux_common/splash.svg ]]; then
-    sed -i 's/BUILD_NUMBER/'"$TODAY-$TODAY_COUNT"'/g' config/bootloaders/syslinux_common/splash.svg || exit 1
+    sed -i 's/BUILD_NUMBER/'"$BUILD_RELEASE_ID"'/g' config/bootloaders/syslinux_common/splash.svg || exit 1
   fi
   cd .. || exit 1
   cache_key=$(package_cache_key) || exit 1

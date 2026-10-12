@@ -5,8 +5,10 @@ repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 fixture=$(mktemp -d)
 trap 'rm -rf -- "$fixture"' EXIT
 mkdir -p "$fixture/bin" "$fixture/builder" "$fixture/source root/checkout" "$fixture/output root/20200101-1" "$fixture/locks"
+mkdir -p "$fixture/output root/$(date '+%Y%m%d')-1"
 printf 'published sentinel\n' > "$fixture/output root/sentinel.txt"
 printf 'previous release sentinel\n' > "$fixture/output root/20200101-1/sentinel.txt"
+printf 'same-day release sentinel\n' > "$fixture/output root/$(date '+%Y%m%d')-1/sentinel.txt"
 cp "$repo_dir/build-iso" "$repo_dir/purge-iso" "$repo_dir/Dockerfile" "$fixture/builder/"
 mkdir -p "$fixture/builder/tools"
 cp "$repo_dir/tools/patch-live-build-sysfs.py" "$fixture/builder/tools/"
@@ -38,6 +40,11 @@ case "$1" in
     printf '%s\n' "$1" >> "$PODMAN_LOG"
     printf '%s\n' "$@" >> "$PODMAN_LOG"
     if [[ "$1" == build ]]; then
+      if [[ -n "${BUILD_RELEASE_ID:-}" ]]; then
+        [[ "$BUILD_RELEASE_ID" =~ ^[0-9]{8}-[1-9][0-9]*$ ]] || exit 89
+        printf '%s\n' "$BUILD_RELEASE_ID" >> "$PODMAN_RELEASE_ID_LOG"
+      fi
+      [[ "${IMAGE_BUILD_FAIL:-0}" != 1 ]] || exit 43
       iidfile=
       while (($#)); do
         if [[ "$1" == --iidfile ]]; then iidfile=$2; shift 2; else shift; fi
@@ -83,22 +90,31 @@ case "$1" in
         esac
       done
       [[ -n "${stage_root:-}" ]] || exit 84
-      release="$stage_root/$(date '+%Y%m%d')-1"
+      release_id=
+      for argument in "$@"; do
+        case "$argument" in
+          BUILD_RELEASE_ID=*) release_id=${argument#BUILD_RELEASE_ID=} ;;
+        esac
+      done
+      [[ "$release_id" =~ ^[0-9]{8}-[1-9][0-9]*$ ]] || exit 88
+      release="$stage_root/${PODMAN_RELEASE_DIR_OVERRIDE:-$release_id}"
       mkdir -p "$release"
       image=blankon-live-image-fixture-amd64
       for suffix in contents files packages hybrid.iso hybrid.iso.zsync build.log.txt tail100.build.log.txt; do printf 'fixture %s\n' "$suffix" > "$release/$image.$suffix"; done
       if [[ "${MALFORMED_STAGE:-0}" != 1 ]]; then
         (cd "$release" && sha256sum "$image.hybrid.iso" > "$image.hybrid.iso.sha256sum")
       fi
-      python3 - "$release/$image.build-manifest.json" "$release/$image.hybrid.iso" "${MANIFEST_CASE:-valid}" <<'PY'
+      python3 - "$release/$image.build-manifest.json" "$release/$image.hybrid.iso" "${MANIFEST_CASE:-valid}" "$release_id" <<'PY'
 import hashlib
 import json
 import sys
 from pathlib import Path
 
 manifest_path, iso_path = Path(sys.argv[1]), Path(sys.argv[2])
+release_id = sys.argv[4]
 manifest = {
-    "schema_version": 1,
+    "schema_version": 2,
+    "release_id": release_id,
     "builder_git_sha": "0" * 40,
     "live_source_git_sha": "unknown",
     "live_source_status": "unavailable",
@@ -121,6 +137,9 @@ manifest = {
 case = sys.argv[3]
 if case == "malformed":
     manifest_path.write_text("{not json")
+elif case == "release-id":
+    manifest["release_id"] = "20000101-99"
+    manifest_path.write_text(json.dumps(manifest))
 elif case == "schema":
     manifest["unexpected"] = True
     manifest_path.write_text(json.dumps(manifest))
@@ -166,10 +185,11 @@ BUILD_SEND_TELEGRAM=1
 EOF
 export PODMAN_LOG="$fixture/podman.log" PODMAN_CALL_LOG="$fixture/podman-calls.log" PODMAN_BUILD_ID_LOG="$fixture/podman-build-ids.log" PODMAN_RUN_IMAGE_LOG="$fixture/podman-run-images.log" PATH="$fixture/bin:$PATH"
 export CURL_ARGUMENTS="$fixture/curl-arguments" CURL_CONFIG="$fixture/curl-config"
+export PODMAN_RELEASE_ID_LOG="$fixture/podman-release-ids.log"
 export PODMAN_USERNS=keep-id
 export TMPDIR="$fixture"
 
-bash "$fixture/builder/build-iso" --local checkout
+BUILD_RELEASE_ID=../../untrusted bash "$fixture/builder/build-iso" --local checkout
 [[ $(<"$PODMAN_LOG") == *'--userns=host'* ]]
 [[ $(<"$PODMAN_LOG") == *"$fixture/source root/checkout:$fixture/source root/checkout:ro"* ]]
 [[ $(<"$PODMAN_LOG") == *'--cap-add=SYS_ADMIN'* ]]
@@ -201,15 +221,18 @@ bash "$fixture/builder/build-iso" --local checkout
 [[ $(<"$PODMAN_LOG") != *"$fixture/output root:$fixture/output root:rw"* ]]
 [[ $(<"$fixture/output root/sentinel.txt") == 'published sentinel' ]]
 [[ $(<"$fixture/output root/20200101-1/sentinel.txt") == 'previous release sentinel' ]]
+[[ $(<"$fixture/output root/$(date '+%Y%m%d')-1/sentinel.txt") == 'same-day release sentinel' ]]
 [[ -f "$fixture/output root/current/current.txt" ]]
 [[ -s "$fixture/output root/current/blankon-live-image-fixture-amd64.build-manifest.json" ]]
-python3 - "$fixture/output root/current/blankon-live-image-fixture-amd64.build-manifest.json" <<'PY'
+[[ $(<"$PODMAN_RELEASE_ID_LOG") == "$(<"$fixture/output root/current/current.txt")" ]]
+python3 - "$fixture/output root/current/blankon-live-image-fixture-amd64.build-manifest.json" "$fixture/output root/current/current.txt" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 manifest = json.loads(Path(sys.argv[1]).read_text())
-assert manifest["schema_version"] == 1
+assert manifest["schema_version"] == 2
+assert manifest["release_id"] == Path(sys.argv[2]).read_text().strip()
 assert manifest["builder_git_sha"] == "unknown"
 assert manifest["oci_base_reference"].startswith("ghcr.io/blankon/")
 assert manifest["builder_image_id"] == "sha256:" + "0" * 63 + "1"
@@ -316,6 +339,8 @@ if RUN_FAIL=1 bash "$fixture/builder/build-iso" --local checkout; then
   exit 1
 fi
 [[ $(<"$PODMAN_LOG") != *secret* ]]
+failed_release_id=$(python3 -c 'import sys; print(open(sys.argv[1]).read().splitlines()[-1])' "$PODMAN_RELEASE_ID_LOG")
+[[ ! -e "$fixture/output root/$failed_release_id" ]]
 [[ -z $(command find "$fixture" -maxdepth 1 -name 'blankon-builder-iid.*' -print -quit) ]]
 [[ $(<"$fixture/output root/current/current.txt") == "$initial_current" ]]
 [[ -z $(command find "$fixture/builder/workdir" -maxdepth 1 -name '.build-stage.*' -print -quit) ]]
@@ -325,13 +350,23 @@ if MALFORMED_STAGE=1 bash "$fixture/builder/build-iso" --local checkout; then
 fi
 [[ $(<"$fixture/output root/current/current.txt") == "$initial_current" ]]
 [[ -z $(command find "$fixture/output root" -maxdepth 1 -name '.build-stage.*' -print -quit) ]]
-for manifest_case in malformed schema revision source-state digest; do
+for manifest_case in malformed schema revision source-state digest release-id; do
   if MANIFEST_CASE="$manifest_case" bash "$fixture/builder/build-iso" --local checkout; then
     printf 'Error: Invalid staged manifest case %s was accepted.\n' "$manifest_case" >&2
     exit 1
   fi
   [[ $(<"$fixture/output root/current/current.txt") == "$initial_current" ]]
 done
+if IMAGE_BUILD_FAIL=1 bash "$fixture/builder/build-iso" --local checkout; then exit 1; fi
+failed_release_id=$(python3 -c 'import sys; print(open(sys.argv[1]).read().splitlines()[-1])' "$PODMAN_RELEASE_ID_LOG")
+[[ ! -e "$fixture/output root/$failed_release_id" ]]
+[[ -z $(command find "$fixture" -maxdepth 1 -name 'blankon-builder-iid.*' -print -quit) ]]
+if PODMAN_RELEASE_DIR_OVERRIDE=20000101-777 bash "$fixture/builder/build-iso" --local checkout; then
+  printf 'Error: Mismatched staged release directory was accepted.\n' >&2
+  exit 1
+fi
+[[ $(<"$fixture/output root/current/current.txt") == "$initial_current" ]]
+[[ $(<"$fixture/output root/20200101-1/sentinel.txt") == 'previous release sentinel' ]]
 
 : > "$PODMAN_LOG"
 if CURL_FAIL=1 bash "$fixture/builder/build-iso" --local checkout; then

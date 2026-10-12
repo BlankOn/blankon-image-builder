@@ -48,6 +48,7 @@ manifest_text = manifest_path.read_text()
 manifest = json.loads(manifest_text)
 assert set(manifest) == {
     "schema_version",
+    "release_id",
     "builder_git_sha",
     "live_source_git_sha",
     "live_source_status",
@@ -67,7 +68,8 @@ assert set(manifest) == {
     "output_sha256",
     "build_result",
 }
-assert manifest["schema_version"] == 1
+assert manifest["schema_version"] == 2
+assert manifest["release_id"] == manifest_path.parent.name
 assert manifest["builder_git_sha"] == "fixture-builder-sha"
 assert manifest["live_source_git_sha"] == "unknown"
 assert manifest["live_source_status"] == "unavailable"
@@ -241,6 +243,32 @@ PY
 bash "$scripts_dir/build-iso" --remote "$source_dir" ci-smoke
 [[ $(<.build/config/variant-marker) == 'branch tip' ]]
 latest_current=$(<"$BUILD_JAHITAN_PATH/current/current.txt")
+
+supplied_release_id=20000101-77
+supplied_stage="$test_root/supplied-stage"
+mkdir -p "$supplied_stage"
+env BUILD_PUBLISH_STAGING_ONLY=1 BUILD_JAHITAN_PATH="$supplied_stage" BUILD_RELEASE_ID="$supplied_release_id" \
+  bash "$scripts_dir/build-iso" --remote "$source_dir" ci-smoke "$pinned_commit"
+[[ -d "$supplied_stage/$supplied_release_id" ]]
+[[ -d "tmp/$supplied_release_id/.git" ]]
+[[ $(<.build/config/bootloaders/syslinux_common/splash.svg) == *"$supplied_release_id"* ]]
+python3 - "$supplied_stage/$supplied_release_id/$image_name.build-manifest.json" "$supplied_release_id" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+manifest = json.loads(Path(sys.argv[1]).read_text())
+assert manifest["release_id"] == sys.argv[2]
+PY
+for invalid_release_id in '' '../20200101-1' '20200101-0' 'not-a-release'; do
+  invalid_stage="$test_root/invalid-stage-${invalid_release_id//[^a-zA-Z0-9]/_}"
+  if env BUILD_PUBLISH_STAGING_ONLY=1 BUILD_JAHITAN_PATH="$invalid_stage" BUILD_RELEASE_ID="$invalid_release_id" \
+      bash "$scripts_dir/build-iso" --local "$source_dir"; then
+    echo 'Error: invalid staged release ID was accepted' >&2
+    exit 1
+  fi
+  [[ -z $(find "$invalid_stage" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null) ]]
+done
 
 if bash "$scripts_dir/build-iso" --remote "$source_dir" missing-branch; then
   echo 'Error: missing remote branch was accepted' >&2

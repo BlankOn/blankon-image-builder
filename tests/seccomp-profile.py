@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PodmanSecurityTests(unittest.TestCase):
-    def test_builder_uses_exact_apt_version_without_image_time_rewriting(self):
+    def test_builder_uses_exact_apt_installed_live_build_package(self):
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("        python3 \\\n", dockerfile)
         self.assertNotIn("patch-live-build-sysfs.py", dockerfile)

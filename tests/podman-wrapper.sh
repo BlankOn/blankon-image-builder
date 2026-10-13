@@ -10,8 +10,6 @@ printf 'published sentinel\n' > "$fixture/output root/sentinel.txt"
 printf 'previous release sentinel\n' > "$fixture/output root/20200101-1/sentinel.txt"
 printf 'same-day release sentinel\n' > "$fixture/output root/$(date '+%Y%m%d')-1/sentinel.txt"
 cp "$repo_dir/build-iso" "$repo_dir/purge-iso" "$repo_dir/Dockerfile" "$fixture/builder/"
-mkdir -p "$fixture/builder/tools"
-cp "$repo_dir/tools/live-build-sysfs-recursive-unmount.patch" "$fixture/builder/tools/"
 cat > "$fixture/bin/podman" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail

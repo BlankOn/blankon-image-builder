@@ -87,10 +87,6 @@ jobs:
         shell: bash
         run: bash tests/seccomp-profile.sh
 
-      - name: Test pinned live-build package fixtures
-        shell: bash
-        run: python3 tests/live-build-package.py
-
       - name: Test seccomp profile Python fixtures
         shell: bash
         run: python3 tests/seccomp-profile.py
@@ -128,9 +124,6 @@ jobs:
 
       - name: Test seccomp profile fixtures
         run: bash tests/seccomp-profile.sh
-
-      - name: Test pinned live-build package fixtures
-        run: python3 tests/live-build-package.py
 
       - name: Test seccomp profile Python fixtures
         run: python3 tests/seccomp-profile.py

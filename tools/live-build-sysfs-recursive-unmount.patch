@@ -1,15 +1,7 @@
 diff --git a/scripts/build/chroot_sysfs b/scripts/build/chroot_sysfs
 --- a/scripts/build/chroot_sysfs
 +++ b/scripts/build/chroot_sysfs
-@@ -59,15 +59,9 @@ case "${_ACTION}" in
- 		Acquire_lockfile
- 
--		# Unmounting /sys/firmware/efi/efivars
--		if mountpoint -q chroot/sys/firmware/efi/efivars
--		then
--			umount chroot/sys/firmware/efi/efivars
--		fi
--
+@@ -65,7 +65,7 @@ case "${_ACTION}" in
  		# Unmounting /sys
  		if mountpoint -q chroot/sys
  		then

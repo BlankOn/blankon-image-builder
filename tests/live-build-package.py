@@ -73,7 +73,11 @@ class LiveBuildPackageTests(unittest.TestCase):
         self.assertNotIn(
             "umount -R", patched_source.replace("umount -R chroot/sys", "")
         )
-        self.assertNotIn("umount chroot/sys/firmware/efi/efivars", patched_source)
+        self.assertIn("umount chroot/sys/firmware/efi/efivars", patched_source)
+        self.assertLess(
+            patched_source.index("umount chroot/sys/firmware/efi/efivars"),
+            patched_source.index("umount -R chroot/sys"),
+        )
         self.assertLess(
             patched_source.index("umount -R chroot/sys"),
             patched_source.index("Remove_stagefile"),

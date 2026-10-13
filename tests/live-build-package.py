@@ -122,21 +122,28 @@ _ACTION=remove
         self.assertEqual(successful_unmount.returncode, 0, successful_unmount.stderr)
         self.assertIn("stage-removed", successful_unmount.stdout)
 
-    def test_dockerfile_builds_and_installs_the_pinned_native_package(self):
+    def test_dockerfile_installs_the_exact_published_apt_package(self):
         dockerfile = DOCKERFILE_PATH.read_text(encoding="utf-8")
-        self.assertIn("AS live-build-package", dockerfile)
-        dependency_layer, package_layer = dockerfile.split(
-            "COPY tools/live-build-sysfs-recursive-unmount.patch", 1
+        self.assertEqual(dockerfile.count("\nFROM "), 0)
+        self.assertIn(
+            "FROM ghcr.io/blankon/blankon-nightly@sha256:76b7e3b7feba1221d649481673af63bf65c310361916d574c6fe1cb90a02fea5",
+            dockerfile,
         )
-        self.assertIn("debhelper", dependency_layer)
-        self.assertIn("devscripts", dependency_layer)
-        self.assertLess(
-            package_layer.index("RUN git init /tmp/live-build-source"),
-            package_layer.index("fetch --depth=1"),
+        self.assertNotIn("ARG LIVE_BUILD_PACKAGE_VERSION", dockerfile)
+        self.assertIn(f"live-build={PACKAGE_VERSION} \\\n", dockerfile)
+        self.assertIn(
+            f"\"$(dpkg-query -W -f='${{Version}}' live-build)\" = '{PACKAGE_VERSION}'",
+            dockerfile,
         )
-        final_stage = dockerfile.rsplit("\nFROM ", 1)[1]
-        self.assertIn("        git \\\n", final_stage)
-        self.assertIn("        python3 \\\n", final_stage)
+        self.assertNotIn("salsa.debian.org", dockerfile)
+        self.assertNotIn("git fetch", dockerfile)
+        self.assertNotIn("dpkg-buildpackage", dockerfile)
+        self.assertNotIn("dpkg-checkbuilddeps", dockerfile)
+        self.assertNotIn("tools/live-build-sysfs-recursive-unmount.patch", dockerfile)
+        self.assertNotIn("/tmp/live-build.deb", dockerfile)
+        self.assertIn("        git \\\n", dockerfile)
+        self.assertIn("        python3 \\\n", dockerfile)
+        self.assertIn("        blankon-keyring \\\n", dockerfile)
         for build_only_dependency in (
             "build-essential",
             "debhelper",
@@ -144,22 +151,7 @@ _ACTION=remove
             "gettext",
             "po4a",
         ):
-            self.assertNotIn(build_only_dependency, final_stage)
-        self.assertIn(
-            f"fetch --depth=1 https://salsa.debian.org/live-team/live-build.git {UPSTREAM_COMMIT}",
-            dockerfile,
-        )
-        self.assertIn(f'rev-parse HEAD)" = {UPSTREAM_COMMIT}', dockerfile)
-        self.assertIn("apply --check --whitespace=error", dockerfile)
-        self.assertIn("dpkg-checkbuilddeps", dockerfile)
-        self.assertIn("dpkg-buildpackage -b -us -uc", dockerfile)
-        self.assertIn(
-            "DEBEMAIL=builder@example.invalid DEBFULLNAME='BlankOn Image Builder' dch",
-            dockerfile,
-        )
-        self.assertIn(f"--newversion '{PACKAGE_VERSION}'", dockerfile)
-        self.assertIn(f"= '{PACKAGE_VERSION}'", dockerfile)
-        self.assertIn("python3 \\", dockerfile)
+            self.assertNotIn(build_only_dependency, dockerfile)
         self.assertNotIn("patch-live-build-sysfs.py", dockerfile)
 
 

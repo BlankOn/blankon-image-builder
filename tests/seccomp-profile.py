@@ -8,11 +8,21 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PodmanSecurityTests(unittest.TestCase):
-    def test_builder_keeps_python_without_image_time_live_build_rewriting(self):
+    def test_builder_uses_exact_apt_version_without_image_time_rewriting(self):
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("        python3 \\\n", dockerfile)
         self.assertNotIn("patch-live-build-sysfs.py", dockerfile)
-        self.assertIn("apply --whitespace=error", dockerfile)
+        self.assertIn(
+            "live-build=1:20250814+git531cdb9854e04d08c3c3770463454d8a5e91b129+blankon1",
+            dockerfile,
+        )
+        self.assertIn(
+            "\"$(dpkg-query -W -f='${Version}' live-build)\" = '1:20250814+git531cdb9854e04d08c3c3770463454d8a5e91b129+blankon1'",
+            dockerfile,
+        )
+        self.assertNotIn("apply --whitespace=error", dockerfile)
+        self.assertNotIn("salsa.debian.org", dockerfile)
+        self.assertNotIn("dpkg-buildpackage", dockerfile)
 
     def test_build_and_purge_keep_rootless_identity_mapping(self):
         for filename in ("build-iso", "purge-iso"):

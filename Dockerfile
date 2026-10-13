@@ -19,8 +19,7 @@ RUN apt-get update \
         tar \
         ca-certificates \
         python3 \
-        live-build=1:20250814+git531cdb9854e04d08c3c3770463454d8a5e91b129+blankon1 \
-    && test "$(dpkg-query -W -f='${Version}' live-build)" = '1:20250814+git531cdb9854e04d08c3c3770463454d8a5e91b129+blankon1' \
+        live-build \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workdir

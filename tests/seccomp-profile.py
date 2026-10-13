@@ -8,18 +8,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PodmanSecurityTests(unittest.TestCase):
-    def test_builder_uses_exact_apt_installed_live_build_package(self):
+    def test_builder_installs_unversioned_apt_live_build_candidate(self):
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("        python3 \\\n", dockerfile)
         self.assertNotIn("patch-live-build-sysfs.py", dockerfile)
         self.assertIn(
-            "live-build=1:20250814+git531cdb9854e04d08c3c3770463454d8a5e91b129+blankon1",
+            "        live-build \\\n",
             dockerfile,
         )
-        self.assertIn(
-            "\"$(dpkg-query -W -f='${Version}' live-build)\" = '1:20250814+git531cdb9854e04d08c3c3770463454d8a5e91b129+blankon1'",
-            dockerfile,
-        )
+        self.assertNotRegex(dockerfile, r"\blive-build=[^\s\\]+")
+        self.assertNotIn("dpkg-query", dockerfile)
         self.assertNotIn("apply --whitespace=error", dockerfile)
         self.assertNotIn("salsa.debian.org", dockerfile)
         self.assertNotIn("dpkg-buildpackage", dockerfile)

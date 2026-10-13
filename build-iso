@@ -226,74 +226,6 @@ update_current_output() {
     fi
 }
 
-write_build_manifest() {
-    local manifest_path="$TARGET_DIR/$IMAGE_NAME.build-manifest.json" output_checksum output_sha256
-    output_checksum=$(sha256sum -- "$TARGET_DIR/$IMAGE_NAME.hybrid.iso") || return 1
-    output_sha256=${output_checksum%% *}
-    BUILD_MANIFEST_OUTPUT_SHA256="$output_sha256" LIVE_SOURCE_GIT_SHA="${LIVE_SOURCE_GIT_SHA:-unknown}" LIVE_SOURCE_STATUS="${LIVE_SOURCE_STATUS:-unavailable}" python3 - "$manifest_path" <<'PY'
-import json
-import os
-import subprocess
-import sys
-import tempfile
-from pathlib import Path
-
-manifest_path = Path(sys.argv[1])
-def read_version(command):
-    try:
-        result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=5)
-        return result.stdout.strip().splitlines()[0] or "unknown"
-    except (OSError, subprocess.SubprocessError, IndexError):
-        return "unknown"
-
-def read_boolean(name):
-    value = os.environ.get(name, "unknown").lower()
-    return True if value == "true" else False if value == "false" else None
-
-manifest = {
-    "schema_version": 2,
-    "release_id": os.environ["BUILD_RELEASE_ID"],
-    "builder_git_sha": os.environ.get("BUILD_BUILDER_GIT_SHA", "unknown"),
-    "live_source_git_sha": os.environ.get("LIVE_SOURCE_GIT_SHA", "unknown"),
-    "live_source_status": os.environ.get("LIVE_SOURCE_STATUS", "unavailable"),
-    "oci_base_reference": os.environ.get("BUILD_OCI_BASE_REFERENCE", "unknown"),
-    "builder_image_id": os.environ.get("BUILD_BUILDER_IMAGE_ID", "unknown"),
-    "live_build_version": read_version(["lb", "--version"]),
-    "debootstrap_version": read_version(["debootstrap", "--version"]),
-    "podman_version": os.environ.get("BUILD_PODMAN_VERSION", "unknown"),
-    "host_kernel": os.environ.get("BUILD_HOST_KERNEL", "unknown"),
-    "host_os": os.environ.get("BUILD_HOST_OS", "unknown"),
-    "rootless": os.environ.get("BUILD_ROOTLESS", "").lower() == "true",
-    "userns_mode": os.environ.get("BUILD_USERNS_MODE", "unknown"),
-    "security_profile": os.environ.get("BUILD_SECURITY_PROFILE", "unknown"),
-    "host_selinux_state": os.environ.get("BUILD_HOST_SELINUX_STATE", "unknown"),
-    "selinux_enforcing": read_boolean("BUILD_SELINUX_ENFORCING"),
-    "podman_selinux_enabled": read_boolean("BUILD_PODMAN_SELINUX_ENABLED"),
-    "output_sha256": os.environ["BUILD_MANIFEST_OUTPUT_SHA256"],
-    "build_result": "success",
-}
-temporary_path = None
-try:
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        dir=manifest_path.parent,
-        prefix=f".{manifest_path.name}.",
-        suffix=".tmp",
-        delete=False,
-    ) as temporary_file:
-        temporary_path = Path(temporary_file.name)
-        json.dump(manifest, temporary_file, indent=2, sort_keys=True)
-        temporary_file.write("\n")
-    os.chmod(temporary_path, 0o644)
-    os.replace(temporary_path, manifest_path)
-except Exception:
-    if temporary_path is not None and temporary_path.exists():
-        temporary_path.unlink()
-    raise
-PY
-}
-
 publish_artifacts() {
     local suffix
 
@@ -312,17 +244,10 @@ publish_artifacts() {
         FAILURE_REASON="Error: Failed to generate SHA-256 checksum"
         return 1
     fi
-    if ! write_build_manifest; then
-        FAILURE_REASON="Error: Failed to write build provenance manifest"
-        return 1
-    fi
     if [[ "${BUILD_PUBLISH_STAGING_ONLY:-}" == 1 ]]; then
         return 0
     fi
     if ! update_current_output; then
-        if ! rm -f -- "$TARGET_DIR/$IMAGE_NAME.build-manifest.json"; then
-            echo 'Error: Failed to remove unpublished build manifest' >&2
-        fi
         FAILURE_REASON="Error: Failed to update current Jahitan artifacts"
         return 1
     fi
@@ -432,15 +357,12 @@ validate_host_arguments() {
 validate_podman_experiment() {
   case "${BUILD_PODMAN_EXPERIMENT:-baseline}" in
     baseline)
-      BUILD_PODMAN_SECURITY_PROFILE=baseline-v1
       BUILD_PODMAN_SECURITY_ARGS=(--security-opt 'unmask=/proc/*')
       ;;
     no-proc-unmask)
-      BUILD_PODMAN_SECURITY_PROFILE=no-proc-unmask-experiment-v1
       BUILD_PODMAN_SECURITY_ARGS=()
       ;;
     no-new-privileges)
-      BUILD_PODMAN_SECURITY_PROFILE=no-new-privileges-experiment-v1
       BUILD_PODMAN_SECURITY_ARGS=(--security-opt 'unmask=/proc/*' --security-opt no-new-privileges)
       ;;
     *)
@@ -694,44 +616,10 @@ build_builder_image() {
 
 run_podman_build() {
   local builder_image_id="$1" mode="$2" build_status=0 container_build_local=/workdir stage_dir
-  local builder_git_sha=unknown podman_version=unknown host_kernel=unknown host_os=unknown host_selinux_state=unknown podman_selinux_enabled=unknown selinux_enforcing=unknown oci_base_reference=unknown
   shift
   shift
   [[ -z "$HOST_SOURCE_PATH" ]] || container_build_local=$HOST_SOURCE_PATH
   stage_dir=$(mktemp -d "$HOST_WORKDIR/.build-stage.XXXXXXXX") || return 1
-  builder_git_sha=$(git -C "$SCRIPT_DIR" rev-parse --verify HEAD 2>/dev/null) || builder_git_sha=unknown
-  [[ -n "$builder_git_sha" ]] || builder_git_sha=unknown
-  podman_version=$(env -u TELEGRAM_BOT_KEY -u TELEGRAM_BOT_KEY_FILE podman --version 2>/dev/null) || podman_version=unknown
-  [[ -n "$podman_version" ]] || podman_version=unknown
-  host_kernel=$(uname -r 2>/dev/null) || host_kernel=unknown
-  [[ -n "$host_kernel" ]] || host_kernel=unknown
-  host_os=$(
-    if [[ -r /etc/os-release ]]; then
-      . /etc/os-release
-      printf '%s/%s' "${ID:-unknown}" "${VERSION_ID:-unknown}"
-    else
-      printf 'unknown'
-    fi
-  )
-  [[ -n "$host_os" ]] || host_os=unknown
-  host_selinux_state=$(getenforce 2>/dev/null) || host_selinux_state=unknown
-  [[ -n "$host_selinux_state" ]] || host_selinux_state=unknown
-  case "$host_selinux_state" in
-    Enforcing) selinux_enforcing=true ;;
-    Permissive|Disabled) selinux_enforcing=false ;;
-  esac
-  podman_selinux_enabled=$(env -u TELEGRAM_BOT_KEY -u TELEGRAM_BOT_KEY_FILE podman info --format '{{.Host.Security.SelinuxEnabled}}' 2>/dev/null) || podman_selinux_enabled=unknown
-  [[ "$podman_selinux_enabled" == true || "$podman_selinux_enabled" == false ]] || podman_selinux_enabled=unknown
-  if [[ -r "$SCRIPT_DIR/Dockerfile" ]]; then
-    while IFS= read -r dockerfile_line || [[ -n "$dockerfile_line" ]]; do
-      read -r -a dockerfile_fields <<< "$dockerfile_line"
-      if [[ "${dockerfile_fields[0]:-}" == FROM && -n "${dockerfile_fields[1]:-}" ]]; then
-        oci_base_reference=${dockerfile_fields[1]}
-        break
-      fi
-    done < "$SCRIPT_DIR/Dockerfile"
-  fi
-  [[ -n "$oci_base_reference" ]] || oci_base_reference=unknown
   local -a args=(
     run --rm
     --userns=host
@@ -750,18 +638,6 @@ run_podman_build() {
     --env BUILD_PUBLISH_STAGING_ONLY=1
     --env "BUILD_RELEASE_ID=$BUILD_RELEASE_ID"
     --env "BUILD_PUBLISH_URL=$BUILD_PUBLISH_URL"
-    --env "BUILD_BUILDER_GIT_SHA=$builder_git_sha"
-    --env "BUILD_BUILDER_IMAGE_ID=$builder_image_id"
-    --env "BUILD_PODMAN_VERSION=$podman_version"
-    --env "BUILD_HOST_KERNEL=$host_kernel"
-    --env "BUILD_HOST_OS=$host_os"
-    --env "BUILD_HOST_SELINUX_STATE=$host_selinux_state"
-    --env "BUILD_SELINUX_ENFORCING=$selinux_enforcing"
-    --env "BUILD_PODMAN_SELINUX_ENABLED=$podman_selinux_enabled"
-    --env "BUILD_OCI_BASE_REFERENCE=$oci_base_reference"
-    --env BUILD_ROOTLESS=true
-    --env BUILD_USERNS_MODE=host
-    --env "BUILD_SECURITY_PROFILE=$BUILD_PODMAN_SECURITY_PROFILE"
     --env BUILD_LOCK_HELD=1
     --env PACKAGE_CACHE_LOCK_HELD=1
   )
@@ -776,8 +652,8 @@ run_podman_build() {
   fi
   env -u TELEGRAM_BOT_KEY -u TELEGRAM_BOT_KEY_FILE podman "${args[@]}" || build_status=$?
   if (( build_status == 0 )); then
-    local -a stage_children=() staged_isos=() staged_checksums=() staged_manifests=()
-    local staged_release staged_name staged_file image_name checksum_line checksum_hash checksum_output manifest_size
+    local -a stage_children=() staged_isos=() staged_checksums=()
+    local staged_release staged_name staged_file image_name checksum_line checksum_hash checksum_output
     while IFS= read -r -d '' staged_file; do stage_children+=("$staged_file"); done < <(find "$stage_dir" -mindepth 1 -maxdepth 1 -print0)
     if (( ${#stage_children[@]} != 1 )) || [[ ! -d "${stage_children[0]:-}" || -L "${stage_children[0]:-}" ]] || \
        [[ "$(basename -- "${stage_children[0]:-}")" != "$BUILD_RELEASE_ID" ]]; then
@@ -796,19 +672,17 @@ run_podman_build() {
           case "$staged_file" in
             *.hybrid.iso) staged_isos+=("$staged_file") ;;
             *.hybrid.iso.sha256sum) staged_checksums+=("$staged_file") ;;
-            *.build-manifest.json) staged_manifests+=("$staged_file") ;;
           esac
         fi
       done < <(find "$staged_release" -mindepth 1 -print0)
       if (( build_status == 0 )); then
-        if (( ${#staged_isos[@]} != 1 || ${#staged_checksums[@]} != 1 || ${#staged_manifests[@]} != 1 )); then
-          echo 'Error: Build stage must contain exactly one ISO, checksum, and manifest.' >&2
+        if (( ${#staged_isos[@]} != 1 || ${#staged_checksums[@]} != 1 )); then
+          echo 'Error: Build stage must contain exactly one ISO and checksum.' >&2
           build_status=1
         else
           image_name=$(basename -- "${staged_isos[0]%.hybrid.iso}")
-          if [[ ! "$image_name" =~ ^blankon-live-image-[a-z0-9][a-z0-9-]*-(amd64|i386)$ || \
-                "${staged_manifests[0]}" != "$staged_release/$image_name.build-manifest.json" ]]; then
-            echo 'Error: Build stage has an unsafe or mismatched image manifest name.' >&2
+          if [[ ! "$image_name" =~ ^blankon-live-image-[a-z0-9][a-z0-9-]*-(amd64|i386)$ ]]; then
+            echo 'Error: Build stage has an unsafe image name.' >&2
             build_status=1
           fi
           for suffix in contents files packages hybrid.iso.zsync build.log.txt tail100.build.log.txt; do
@@ -823,128 +697,11 @@ run_podman_build() {
             checksum_output=$(sha256sum -- "${staged_isos[0]}") || build_status=1
             [[ "${checksum_output%% *}" == "$checksum_hash" ]] || build_status=1
           fi
-          if (( build_status == 0 )); then
-            manifest_size=$(stat -c '%s' -- "${staged_manifests[0]}") || build_status=1
-            if (( build_status == 0 )) && (( manifest_size > 1048576 )); then build_status=1; fi
-          fi
-          if (( build_status == 0 )); then
-            BUILD_VALIDATED_RELEASE_ID="$BUILD_RELEASE_ID" \
-            BUILD_VALIDATED_MANIFEST="${staged_manifests[0]}" \
-            BUILD_VALIDATED_ISO="${staged_isos[0]}" \
-            BUILD_VALIDATED_BUILDER_GIT_SHA="$builder_git_sha" \
-            BUILD_VALIDATED_OCI_BASE_REFERENCE="$oci_base_reference" \
-            BUILD_VALIDATED_BUILDER_IMAGE_ID="$builder_image_id" \
-            BUILD_VALIDATED_PODMAN_VERSION="$podman_version" \
-            BUILD_VALIDATED_HOST_KERNEL="$host_kernel" \
-            BUILD_VALIDATED_HOST_OS="$host_os" \
-            BUILD_VALIDATED_ROOTLESS=true \
-            BUILD_VALIDATED_USERNS_MODE=host \
-            BUILD_VALIDATED_SECURITY_PROFILE="$BUILD_PODMAN_SECURITY_PROFILE" \
-            BUILD_VALIDATED_HOST_SELINUX_STATE="$host_selinux_state" \
-            BUILD_VALIDATED_SELINUX_ENFORCING="$selinux_enforcing" \
-            BUILD_VALIDATED_PODMAN_SELINUX_ENABLED="$podman_selinux_enabled" \
-            python3 - <<'PY' || build_status=1
-import hashlib
-import json
-import os
-import re
-import stat
-import tempfile
-from pathlib import Path
-
-manifest_path = Path(os.environ["BUILD_VALIDATED_MANIFEST"])
-iso_path = Path(os.environ["BUILD_VALIDATED_ISO"])
-fields = {
-    "schema_version", "release_id", "builder_git_sha", "live_source_git_sha", "live_source_status",
-    "oci_base_reference", "builder_image_id", "live_build_version", "debootstrap_version",
-    "podman_version", "host_kernel", "host_os", "rootless", "userns_mode",
-    "security_profile", "host_selinux_state", "selinux_enforcing",
-    "podman_selinux_enabled", "output_sha256", "build_result",
-}
-def unique_object(pairs):
-    result = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError("duplicate JSON key")
-        result[key] = value
-    return result
-
-try:
-    if manifest_path.is_symlink() or not stat.S_ISREG(manifest_path.lstat().st_mode):
-        raise ValueError("manifest is not a regular file")
-    raw = manifest_path.read_bytes()
-    if len(raw) > 1048576:
-        raise ValueError("manifest exceeds size limit")
-    data = json.loads(raw, object_pairs_hook=unique_object)
-    if type(data) is not dict or set(data) != fields:
-        raise ValueError("manifest fields do not match schema")
-    if type(data["schema_version"]) is not int or data["schema_version"] != 2:
-        raise ValueError("unsupported manifest schema")
-    strings = fields - {"schema_version", "rootless", "selinux_enforcing", "podman_selinux_enabled", "output_sha256"}
-    for key in strings:
-        if type(data[key]) is not str:
-            raise ValueError("invalid string field: " + key)
-    if not re.fullmatch(r"[0-9]{8}-[1-9][0-9]*", data["release_id"]) or data["release_id"] != os.environ["BUILD_VALIDATED_RELEASE_ID"]:
-        raise ValueError("manifest release identifier mismatch")
-    if data["live_source_status"] not in {"clean", "dirty", "unavailable"} or data["build_result"] != "success":
-        raise ValueError("invalid manifest enum")
-    for key in ("builder_git_sha", "live_source_git_sha"):
-        if data[key] != "unknown" and not re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", data[key]):
-            raise ValueError("invalid revision field: " + key)
-    if (data["live_source_status"] == "unavailable") != (data["live_source_git_sha"] == "unknown"):
-        raise ValueError("live source revision and status are inconsistent")
-    for key in ("selinux_enforcing", "podman_selinux_enabled"):
-        if data[key] is not None and type(data[key]) is not bool:
-            raise ValueError("invalid boolean field: " + key)
-    if type(data["rootless"]) is not bool or not re.fullmatch(r"[0-9a-fA-F]{64}", data["output_sha256"]):
-        raise ValueError("invalid manifest checksum or rootless field")
-    iso_digest = hashlib.sha256()
-    with iso_path.open("rb") as iso_file:
-        for chunk in iter(lambda: iso_file.read(1024 * 1024), b""):
-            iso_digest.update(chunk)
-    actual_sha = iso_digest.hexdigest()
-    if data["output_sha256"].lower() != actual_sha:
-        raise ValueError("manifest ISO checksum mismatch")
-    host_values = {
-        "builder_git_sha": os.environ["BUILD_VALIDATED_BUILDER_GIT_SHA"],
-        "oci_base_reference": os.environ["BUILD_VALIDATED_OCI_BASE_REFERENCE"],
-        "builder_image_id": os.environ["BUILD_VALIDATED_BUILDER_IMAGE_ID"],
-        "podman_version": os.environ["BUILD_VALIDATED_PODMAN_VERSION"],
-        "host_kernel": os.environ["BUILD_VALIDATED_HOST_KERNEL"],
-        "host_os": os.environ["BUILD_VALIDATED_HOST_OS"],
-        "rootless": os.environ["BUILD_VALIDATED_ROOTLESS"] == "true",
-        "userns_mode": os.environ["BUILD_VALIDATED_USERNS_MODE"],
-        "security_profile": os.environ["BUILD_VALIDATED_SECURITY_PROFILE"],
-        "host_selinux_state": os.environ["BUILD_VALIDATED_HOST_SELINUX_STATE"],
-        "selinux_enforcing": {"true": True, "false": False}.get(os.environ["BUILD_VALIDATED_SELINUX_ENFORCING"]),
-        "podman_selinux_enabled": {"true": True, "false": False}.get(os.environ["BUILD_VALIDATED_PODMAN_SELINUX_ENABLED"]),
-        "output_sha256": actual_sha,
-        "build_result": "success",
-    }
-    data.update(host_values)
-    temporary_path = None
-    try:
-        with tempfile.NamedTemporaryFile(mode="wb", dir=manifest_path.parent, prefix=".manifest.", delete=False) as output:
-            temporary_path = Path(output.name)
-            output.write((json.dumps(data, indent=2, sort_keys=True) + "\n").encode("utf-8"))
-        os.chmod(temporary_path, stat.S_IMODE(manifest_path.stat().st_mode))
-        os.replace(temporary_path, manifest_path)
-    except Exception:
-        if temporary_path is not None:
-            if temporary_path.exists():
-                temporary_path.unlink()
-        raise
-except Exception as error:
-    print(f"Error: Invalid staged provenance manifest: {error}", file=__import__("sys").stderr)
-    raise SystemExit(1)
-PY
-          fi
         fi
       fi
       if (( build_status == 0 )); then
         if ! cp -a -- "$staged_release/." "$TARGET_DIR/"; then
           echo 'Error: Failed to promote staged build artifacts.' >&2
-          rm -f -- "$TARGET_DIR"/*.build-manifest.json || echo 'Error: Failed to remove unpublished build manifest.' >&2
           rm -rf -- "$TARGET_DIR" || echo 'Error: Failed to remove partial promoted output.' >&2
           build_status=1
         elif ! rm -rf -- "$stage_dir"; then

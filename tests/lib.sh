@@ -232,16 +232,6 @@ EOF
   export BUILD_JAHITAN_PATH="$test_root/output"
   export BUILD_PUBLISH_URL=https://example.invalid/iso
   export BUILD_LOCAL="$test_root/local"
-  export BUILD_BUILDER_GIT_SHA=fixture-builder-sha
-  export BUILD_BUILDER_IMAGE_ID=sha256:fixture-builder-image
-  export BUILD_PODMAN_VERSION='podman version fixture'
-  export BUILD_HOST_KERNEL=fixture-kernel
-  export BUILD_HOST_OS=fixture-linux/1
-  export BUILD_ROOTLESS=true
-  export BUILD_USERNS_MODE=host
-  export BUILD_SECURITY_PROFILE=baseline-v1
-  export BUILD_OCI_BASE_REFERENCE=ghcr.io/blankon/blankon-nightly@sha256:76b7e3b7feba1221d649481673af63bf65c310361916d574c6fe1cb90a02fea5
-  export BUILD_HOST_SELINUX_STATE=Enforcing BUILD_SELINUX_ENFORCING=true BUILD_PODMAN_SELINUX_ENABLED=false
   HOST_UID=$(id -u)
   HOST_GID=$(id -g)
   export HOST_UID HOST_GID

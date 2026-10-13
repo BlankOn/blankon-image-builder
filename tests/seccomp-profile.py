@@ -38,27 +38,18 @@ class PodmanSecurityTests(unittest.TestCase):
         self.assertIn("--cap-add=SYS_ADMIN", source)
         self.assertIn("unmask=/proc/*", source)
         self.assertIn(
-            "baseline)\n      BUILD_PODMAN_SECURITY_PROFILE=baseline-v1\n"
-            "      BUILD_PODMAN_SECURITY_ARGS=(--security-opt 'unmask=/proc/*')",
+            "baseline)\n      BUILD_PODMAN_SECURITY_ARGS=(--security-opt 'unmask=/proc/*')",
             source,
         )
         self.assertIn(
-            "no-proc-unmask)\n"
-            "      BUILD_PODMAN_SECURITY_PROFILE=no-proc-unmask-experiment-v1\n"
-            "      BUILD_PODMAN_SECURITY_ARGS=()",
+            "no-proc-unmask)\n      BUILD_PODMAN_SECURITY_ARGS=()",
             source,
         )
         self.assertIn(
             "no-new-privileges)\n"
-            "      BUILD_PODMAN_SECURITY_PROFILE=no-new-privileges-experiment-v1\n"
             "      BUILD_PODMAN_SECURITY_ARGS=(--security-opt 'unmask=/proc/*' --security-opt no-new-privileges)",
             source,
         )
-        self.assertIn("no-new-privileges-experiment-v1", source)
-        self.assertIn(
-            "BUILD_PODMAN_SECURITY_PROFILE=no-proc-unmask-experiment-v1", source
-        )
-        self.assertIn("BUILD_PODMAN_SECURITY_PROFILE=baseline-v1", source)
         self.assertIn("validate_podman_experiment || return $?", source)
         self.assertNotIn("--security-opt seccomp=", source)
         self.assertNotIn("--security-opt=seccomp=", source)

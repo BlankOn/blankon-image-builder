@@ -1,5 +1,8 @@
 # BlankOn image builder
 
+## WHY using container?
+Because why not
+
 ## Host requirements
 
 - Linux with a working rootless Podman setup. Docker and Compose are not required.

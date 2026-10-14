@@ -253,7 +253,7 @@ make_restricted_path() {
 }
 
 podman_calls_before_dependency_checks=$(<"$PODMAN_CALL_LOG")
-for missing_program in python3 curl findmnt; do
+for missing_program in python3 curl findmnt podman; do
   restricted_path="$fixture/path-without-$missing_program"
   make_restricted_path "$restricted_path" "$missing_program"
   if PATH="$restricted_path" bash "$fixture/builder/build-iso" --local checkout >"$fixture/missing-$missing_program-output" 2>&1; then
@@ -265,6 +265,20 @@ for missing_program in python3 curl findmnt; do
   [[ $(<"$fixture/output root/current/current.txt") == "$initial_current" ]]
   [[ -z $(command find "$fixture/output root" -maxdepth 1 -name '.build-stage.*' -print -quit) ]]
 done
+
+cat > "$fixture/builder/.env" <<EOF
+BUILD_LOCAL="$fixture/source root"
+BUILD_LOCKFILE="$fixture/locks/build lock"
+BUILD_JAHITAN_PATH="$fixture/output root"
+BUILD_PUBLISH_URL=https://example.invalid/invalid?query
+BUILD_SEND_TELEGRAM=0
+EOF
+if bash "$fixture/builder/build-iso" --local checkout >"$fixture/invalid-publish-url-output" 2>&1; then
+  printf 'Error: Build accepted malformed BUILD_PUBLISH_URL syntax.\n' >&2
+  exit 1
+fi
+[[ $(<"$fixture/invalid-publish-url-output") == *'Unsupported BUILD_PUBLISH_URL syntax in .env.'* ]]
+[[ $(<"$PODMAN_CALL_LOG") == "$podman_calls_before_dependency_checks" ]]
 
 cat > "$fixture/builder/.env" <<EOF
 BUILD_LOCAL="$fixture/source root"

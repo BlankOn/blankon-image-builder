@@ -429,7 +429,7 @@ validate_host_configuration() {
     return 1
   fi
   if [[ "$BUILD_LOCAL" != /* || ! -d "$BUILD_LOCAL" || "$BUILD_LOCKFILE" != /* || \
-        "$BUILD_JAHITAN_PATH" != /* || ! "$BUILD_PUBLISH_URL" =~ ^https?://[A-Za-z0-9._:/-]+$ ]]; then
+        "$BUILD_JAHITAN_PATH" != /* || -z "$BUILD_PUBLISH_URL" ]]; then
     echo 'Error: Invalid build configuration.' >&2
     return 1
   fi
@@ -437,10 +437,6 @@ validate_host_configuration() {
   BUILD_LOCAL=$(realpath -- "$BUILD_LOCAL") || return 1
   if [[ "$BUILD_LOCAL" == / ]]; then
     echo 'Error: BUILD_LOCAL cannot be the filesystem root.' >&2
-    return 1
-  fi
-  if ! command -v podman >/dev/null 2>&1; then
-    echo 'Error: Podman is required.' >&2
     return 1
   fi
   if [[ "$(env -u TELEGRAM_BOT_KEY -u TELEGRAM_BOT_KEY_FILE podman info --format '{{.Host.Security.Rootless}}')" != true ]]; then

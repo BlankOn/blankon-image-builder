@@ -16,19 +16,6 @@ validate_required_environment() {
   fi
 }
 
-set_live_source_identity() {
-  local source_dir="$1" source_status
-  LIVE_SOURCE_GIT_SHA=$(git -C "$source_dir" rev-parse --verify HEAD 2>/dev/null) || LIVE_SOURCE_GIT_SHA=unknown
-  [[ -n "$LIVE_SOURCE_GIT_SHA" ]] || LIVE_SOURCE_GIT_SHA=unknown
-  if [[ "$LIVE_SOURCE_GIT_SHA" == unknown ]] || ! source_status=$(git -C "$source_dir" status --porcelain --untracked-files=normal 2>/dev/null); then
-    LIVE_SOURCE_STATUS=unavailable
-  elif [[ -z "$source_status" ]]; then
-    LIVE_SOURCE_STATUS=clean
-  else
-    LIVE_SOURCE_STATUS=dirty
-  fi
-}
-
 prepare_build_tree() {
   local source_dir="$1"
   local variant
@@ -42,8 +29,6 @@ prepare_build_tree() {
     echo "Error: Missing config/common or config/$variant"
     return 1
   fi
-  set_live_source_identity "$source_dir"
-
   if ! rm -rf .build; then
     echo 'Error: Failed to remove existing .build tree' >&2
     return 1
@@ -284,8 +269,6 @@ initialize_runtime_state() {
   REPO=""
   BRANCH=""
   COMMIT=""
-  LIVE_SOURCE_GIT_SHA=unknown
-  LIVE_SOURCE_STATUS=unavailable
   START=""
 }
 

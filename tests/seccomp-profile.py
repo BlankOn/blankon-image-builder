@@ -23,7 +23,10 @@ class PodmanSecurityTests(unittest.TestCase):
         self.assertNotIn("dpkg-buildpackage", dockerfile)
 
     def test_build_and_purge_keep_rootless_identity_mapping(self):
-        for filename in ("build-iso", "purge-iso"):
+        for filename in (
+            "libexec/blankon-image-builder/build-iso-runtime",
+            "purge-iso",
+        ):
             with self.subTest(filename=filename):
                 source = (ROOT / filename).read_text(encoding="utf-8")
                 self.assertRegex(source, r"--userns=host")
@@ -34,7 +37,9 @@ class PodmanSecurityTests(unittest.TestCase):
                 )
 
     def test_build_security_experiment_is_allowlisted_and_preserves_baseline(self):
-        source = (ROOT / "build-iso").read_text(encoding="utf-8")
+        source = (ROOT / "libexec/blankon-image-builder/build-iso-runtime").read_text(
+            encoding="utf-8"
+        )
         self.assertIn("--cap-add=SYS_ADMIN", source)
         self.assertIn("unmask=/proc/*", source)
         self.assertIn(
@@ -55,7 +60,9 @@ class PodmanSecurityTests(unittest.TestCase):
         self.assertNotIn("--security-opt=seccomp=", source)
 
     def test_namespace_fixture_covers_actual_unshare_argument_vectors(self):
-        source = (ROOT / "build-iso").read_text(encoding="utf-8")
+        source = (ROOT / "libexec/blankon-image-builder/build-iso-runtime").read_text(
+            encoding="utf-8"
+        )
         self.assertEqual(
             len(
                 re.findall(

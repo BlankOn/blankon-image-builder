@@ -61,6 +61,8 @@ current_before_concurrent_builds=$(<"$BUILD_JAHITAN_PATH/current/current.txt")
 mkdir -p "$test_root/concurrent/barrier" "$test_root/concurrent/work-a" "$test_root/concurrent/work-b"
 cp -- "$scripts_dir/build-iso" "$test_root/concurrent/build-a"
 cp -- "$scripts_dir/build-iso" "$test_root/concurrent/build-b"
+mkdir -p "$test_root/concurrent/libexec/blankon-image-builder"
+cp -- "$scripts_dir/libexec/blankon-image-builder/build-iso-runtime" "$test_root/concurrent/libexec/blankon-image-builder/"
 (cd -- "$test_root/concurrent/work-a" && \
   env BUILD_LOCKFILE="$test_root/concurrent/lock-a" \
     FAKE_MKDIR_BARRIER_DIR="$test_root/concurrent/barrier" FAKE_MKDIR_BARRIER_ID=first \
@@ -197,7 +199,7 @@ if bash "$scripts_dir/build-iso" --remote "$source_dir" ci-smoke deadbeef; then
   exit 1
 fi
 remote_preparation_function="$test_root/prepare-remote-source.fixture"
-python3 - "$scripts_dir/build-iso" "$remote_preparation_function" <<'PY'
+python3 - "$scripts_dir/libexec/blankon-image-builder/build-iso-runtime" "$remote_preparation_function" <<'PY'
 import sys
 from pathlib import Path
 

@@ -20,7 +20,9 @@ fixture_init() {
     "$source_dir/config/common/includes.chroot/etc/blankon" \
     "$source_dir/config/common/bootloaders/syslinux_common" \
     "$source_dir/config/smoke" "$source_dir/auto"
+  mkdir -p "$scripts_dir/libexec/blankon-image-builder"
   cp -- "$repo_dir/build-iso" "$repo_dir/purge-iso" "$repo_dir/Dockerfile" "$scripts_dir/"
+  cp -- "$repo_dir/libexec/blankon-image-builder/build-iso-runtime" "$scripts_dir/libexec/blankon-image-builder/"
   printf 'smoke\n' > "$source_dir/variant"
   printf 'archive fixture\n' > "$source_dir/config/common/includes.chroot/etc/blankon/archive.conf"
   printf '<svg>BUILD_NUMBER</svg>\n' > "$source_dir/config/common/bootloaders/syslinux_common/splash.svg"

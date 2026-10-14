@@ -24,5 +24,5 @@ RUN apt-get update \
 
 WORKDIR /workdir
 
-COPY build-iso /usr/local/bin/build-iso
+COPY libexec/blankon-image-builder/build-iso-runtime /usr/local/libexec/blankon-image-builder/build-iso-runtime
 COPY purge-iso /usr/local/bin/purge-iso

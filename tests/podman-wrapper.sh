@@ -4,12 +4,13 @@ set -euo pipefail
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 fixture=$(mktemp -d)
 trap 'rm -rf -- "$fixture"' EXIT
-mkdir -p "$fixture/bin" "$fixture/builder" "$fixture/source root/checkout" "$fixture/output root/20200101-1" "$fixture/locks"
+mkdir -p "$fixture/bin" "$fixture/builder/libexec/blankon-image-builder" "$fixture/source root/checkout" "$fixture/output root/20200101-1" "$fixture/locks"
 mkdir -p "$fixture/output root/$(date '+%Y%m%d')-1"
 printf 'published sentinel\n' > "$fixture/output root/sentinel.txt"
 printf 'previous release sentinel\n' > "$fixture/output root/20200101-1/sentinel.txt"
 printf 'same-day release sentinel\n' > "$fixture/output root/$(date '+%Y%m%d')-1/sentinel.txt"
 cp "$repo_dir/build-iso" "$repo_dir/purge-iso" "$repo_dir/Dockerfile" "$fixture/builder/"
+cp "$repo_dir/libexec/blankon-image-builder/build-iso-runtime" "$fixture/builder/libexec/blankon-image-builder/"
 cat > "$fixture/bin/podman" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -206,7 +207,7 @@ assert payload["text"] == 'quote &quot; slash \\ newline\nnext'
 PY
 
 for obsolete_state in send_telegram RESULT ACTION COMMIT_URL CLEAN_REPO_URL CURRENT_OUTPUT_UPDATED LOCK_ACQUIRED; do
-  if [[ $(<"$fixture/builder/build-iso") == *"$obsolete_state"* ]]; then
+  if [[ $(<"$fixture/builder/libexec/blankon-image-builder/build-iso-runtime") == *"$obsolete_state"* ]]; then
     printf 'Error: Obsolete build state remains: %s\n' "$obsolete_state" >&2
     exit 1
   fi

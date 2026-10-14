@@ -5,8 +5,8 @@ repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 test_root=$(mktemp -d)
 trap 'rm -rf -- "$test_root"' EXIT
 mkdir -p "$test_root/bin"
-mkdir -p "$test_root/checkout"
-cp "$repo_dir/build-iso" "$test_root/checkout/build-iso"
+mkdir -p "$test_root/checkout/libexec/blankon-image-builder"
+cp "$repo_dir/libexec/blankon-image-builder/build-iso-runtime" "$test_root/checkout/libexec/blankon-image-builder/build-iso-runtime"
 printf 'BUILD_LOCAL=%s\nBUILD_LOCKFILE=%s\nBUILD_JAHITAN_PATH=%s\nBUILD_PUBLISH_URL=https://fixture\nBUILD_SEND_TELEGRAM=0\n' "$test_root" "$test_root/build.lock" "$test_root/output" > "$test_root/checkout/.env"
 
 cat > "$test_root/bin/podman" <<'EOF'
@@ -54,10 +54,10 @@ EOF
 chmod +x "$test_root/bin/unshare"
 
 export NAMESPACE_TEST_LOG="$test_root/dispatch.log"
-export NAMESPACE_TEST_SCRIPT="$test_root/checkout/build-iso"
-BUILDER_CONTAINER=1 TELEGRAM_BOT_KEY=fixture BUILD_LOCKFILE=/tmp/fixture BUILD_JAHITAN_PATH=/tmp/fixture BUILD_PUBLISH_URL=https://fixture BUILD_LOCAL=/tmp PATH="$test_root/bin:$PATH" bash "$test_root/checkout/build-iso" --namespace-build --remote fixture/repo fixture-branch
+export NAMESPACE_TEST_SCRIPT="$test_root/checkout/libexec/blankon-image-builder/build-iso-runtime"
+BLANKON_IMAGE_BUILDER_ROOT="$test_root/checkout" BUILDER_CONTAINER=1 TELEGRAM_BOT_KEY=fixture BUILD_LOCKFILE=/tmp/fixture BUILD_JAHITAN_PATH=/tmp/fixture BUILD_PUBLISH_URL=https://fixture BUILD_LOCAL=/tmp PATH="$test_root/bin:$PATH" bash "$NAMESPACE_TEST_SCRIPT" --namespace-build --remote fixture/repo fixture-branch
 podman_log="$test_root/podman-dispatch.log"
-PODMAN_MODE=1 BUILDER_CONTAINER=1 NAMESPACE_TEST_LOG="$podman_log" TELEGRAM_BOT_KEY=fixture BUILD_LOCKFILE=/tmp/fixture BUILD_JAHITAN_PATH=/tmp/fixture BUILD_PUBLISH_URL=https://fixture BUILD_LOCAL=/tmp PATH="$test_root/bin:$PATH" bash "$test_root/checkout/build-iso" --namespace-build --remote fixture/repo fixture-branch
+BLANKON_IMAGE_BUILDER_ROOT="$test_root/checkout" PODMAN_MODE=1 BUILDER_CONTAINER=1 NAMESPACE_TEST_LOG="$podman_log" TELEGRAM_BOT_KEY=fixture BUILD_LOCKFILE=/tmp/fixture BUILD_JAHITAN_PATH=/tmp/fixture BUILD_PUBLISH_URL=https://fixture BUILD_LOCAL=/tmp PATH="$test_root/bin:$PATH" bash "$NAMESPACE_TEST_SCRIPT" --namespace-build --remote fixture/repo fixture-branch
 
 expected_dispatch=$'probe\nexec\ncontainer-build'
 [[ "$(<"$NAMESPACE_TEST_LOG")" == "$expected_dispatch" ]]

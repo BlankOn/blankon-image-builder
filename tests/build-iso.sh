@@ -224,7 +224,7 @@ for clone_path_kind in existing symlink; do
     ln -s "$symlink_clone_target" "$clone_destination"
   fi
   if (cd "$clone_test_root" && env GIT_LOG="$clone_git_log" UMASK_RESULT="$clone_umask_result" \
-      bash -c 'source "$1"; trap '\''umask > "$UMASK_RESULT"'\'' EXIT; umask 077; REPO=fixture REPO_NAME=fixture BRANCH=fixture COMMIT= BUILD_RELEASE_ID=20200101-88; git() { printf invoked >> "$GIT_LOG"; return 90; }; prepare_remote_source' \
+      bash -c 'source "$1"; trap '\''umask > "$UMASK_RESULT"'\'' EXIT; umask 077; REPO=fixture BRANCH=fixture COMMIT= BUILD_RELEASE_ID=20200101-88; git() { printf invoked >> "$GIT_LOG"; return 90; }; prepare_remote_source' \
       _ "$remote_preparation_function") > "$clone_test_root/output" 2>&1; then
     echo "Error: $clone_path_kind remote clone destination was accepted" >&2
     exit 1
@@ -243,7 +243,7 @@ done
 rev_parse_test_root="$test_root/remote-rev-parse-failure"
 mkdir -p "$rev_parse_test_root/tmp"
 if (cd "$rev_parse_test_root" && env UMASK_RESULT="$rev_parse_test_root/umask" FAILURE_RESULT="$rev_parse_test_root/failure" \
-    bash -c 'source "$1"; trap '\''umask > "$UMASK_RESULT"; printf "%s" "$FAILURE_REASON" > "$FAILURE_RESULT"'\'' EXIT; umask 077; REPO=fixture REPO_NAME=fixture BRANCH=fixture COMMIT= BUILD_RELEASE_ID=20200101-90; git() { if [[ "$1" == clone ]]; then mkdir -p "${@: -1}/.git"; return 0; fi; return 1; }; prepare_remote_source' \
+    bash -c 'source "$1"; trap '\''umask > "$UMASK_RESULT"; printf "%s" "$FAILURE_REASON" > "$FAILURE_RESULT"'\'' EXIT; umask 077; REPO=fixture BRANCH=fixture COMMIT= BUILD_RELEASE_ID=20200101-90; git() { if [[ "$1" == clone ]]; then mkdir -p "${@: -1}/.git"; return 0; fi; return 1; }; prepare_remote_source' \
     _ "$remote_preparation_function") > "$rev_parse_test_root/output" 2>&1; then
   echo 'Error: failed remote commit identification was accepted' >&2
   exit 1

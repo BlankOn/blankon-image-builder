@@ -36,7 +36,6 @@ exec {recovery_fd}>&-
   build_finalized="$workdir/build-finalized"
   initialize_runtime_state
   prepare_output_directory() { :; }
-  set_repository_name() { :; }
   clean_build_workspace() { :; }
   build_image() { :; }
   acquire_build_lock() {

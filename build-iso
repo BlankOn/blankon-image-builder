@@ -835,15 +835,6 @@ prepare_output_directory() {
   done
 }
 
-set_repository_name() {
-  if [[ "$MODE" == "--local" ]]; then
-    REPO_NAME="local:$LOCAL_SOURCE"
-    BRANCH="local"
-  else
-    REPO_NAME=$(echo "$REPO" | sed -E 's|.*github.com[:/]([^/]+/[^/.]+)(\.git)?|\1|')
-  fi
-}
-
 clean_build_workspace() {
   ARCH=amd64
   unmount_build_workspace_mounts || return 1
@@ -1005,7 +996,6 @@ run_container_build() {
   fi
   START=$(date +%s)
   prepare_output_directory || exit 1
-  set_repository_name
   clean_build_workspace || exit 1
   build_image
 }

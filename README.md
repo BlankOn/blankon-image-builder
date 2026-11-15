@@ -1,12 +1,11 @@
 # BlankOn image builder
 
-## WHY using container?
-Because why not
+Builds run in a container to isolate a reproducible live-build toolchain from the host.
 
 ## Host requirements
 
 - Linux with a working rootless Podman setup. Docker and Compose are not required.
-- Host entrypoints also need Bash, coreutils, findutils, util-linux, and Python 3. `curl` is needed only for Telegram notifications.
+- Host entrypoints also need Bash, coreutils, findutils, util-linux (`findmnt`, `flock`), and Python 3. `curl` is needed only for Telegram notifications.
 
 ## Configure
 
@@ -50,3 +49,23 @@ Optionally, purge the package cache with:
 ```sh
 ./purge-iso
 ```
+
+## Testing
+
+Run the shell fixture tests and Podman security invariants:
+
+```sh
+for test_script in tests/*.sh; do
+    [[ "$test_script" == tests/lib.sh ]] && continue
+    bash "$test_script" || break
+done
+python3 tests/podman-security.py
+```
+
+Run ShellCheck on the shell entrypoints and fixtures:
+
+```sh
+shellcheck -S warning -x build-iso purge-iso libexec/blankon-image-builder/build-iso-runtime tests/*.sh
+```
+
+CI runs these tests on pull requests and pushes to `sinambung`. The full ISO build runs only on pushes to `sinambung` and manual workflow dispatch.

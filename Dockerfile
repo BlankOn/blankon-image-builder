@@ -20,6 +20,7 @@ RUN apt-get update \
         ca-certificates \
         python3 \
         live-build \
+        eatmydata \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workdir

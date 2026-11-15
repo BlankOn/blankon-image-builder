@@ -244,5 +244,5 @@ EOF
   export TEST_MOUNT_LOG="$test_root/mount.log"
 
   export WORKSPACE_DIR="$test_root/workdir"
-  cd -- "$test_root/workdir"
+  cd -- "$test_root/workdir" || exit
 }

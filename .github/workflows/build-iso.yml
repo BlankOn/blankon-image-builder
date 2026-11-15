@@ -25,7 +25,7 @@ jobs:
       - name: Shellcheck
         run: |
           command -v shellcheck >/dev/null || { sudo apt-get update && sudo apt-get install -y shellcheck; }
-          shellcheck -S error build-iso purge-iso libexec/blankon-image-builder/build-iso-runtime tests/*.sh
+          shellcheck -S warning -x build-iso purge-iso libexec/blankon-image-builder/build-iso-runtime tests/*.sh
 
       - name: Fixture tests
         run: |
@@ -36,7 +36,7 @@ jobs:
             bash "$test_script"
             echo '::endgroup::'
           done
-          python3 tests/seccomp-profile.py
+          python3 tests/podman-security.py
 
   build-iso:
     needs: tests

@@ -3,11 +3,6 @@ set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 fixture_init
 
-output_mode_probe="$test_root/output-mode-probe"
-: > "$output_mode_probe"
-expected_output_mode=$(stat -c '%a' "$output_mode_probe")
-rm -- "$output_mode_probe"
-
 today=$(date '+%Y%m%d')
 mkdir -p "$BUILD_JAHITAN_PATH/$today-1" "$BUILD_JAHITAN_PATH/$today-3"
 printf 'stale output\n' > "$BUILD_JAHITAN_PATH/$today-3/stale.txt"
@@ -142,7 +137,6 @@ git -C "$source_dir" -c commit.gpgsign=false -c user.name=CI -c user.email=ci@ex
 pinned_commit=$(git -C "$source_dir" rev-parse HEAD)
 printf 'uncommitted source\n' > "$source_dir/untracked-local"
 bash "$scripts_dir/build-iso" --local "$source_dir"
-local_dirty_output="$BUILD_JAHITAN_PATH/$(<"$BUILD_JAHITAN_PATH/current/current.txt")"
 rm -- "$source_dir/untracked-local"
 printf 'branch tip\n' > "$source_dir/config/smoke/variant-marker"
 git -C "$source_dir" -c commit.gpgsign=false -c user.name=CI -c user.email=ci@example.invalid commit -qam tip

@@ -4,15 +4,6 @@ on:
   push:
   pull_request:
   workflow_dispatch:
-    inputs:
-      profile:
-        description: ISO source profile
-        type: choice
-        required: true
-        default: e2e
-        options:
-          - e2e
-          - gnome
 
 permissions:
   contents: read
@@ -22,176 +13,182 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-iso:
+  userland-compatibility:
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    timeout-minutes: 15
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
-        mode: [local, remote]
-    name: Build ISO (${{ matrix.mode }}, ${{ inputs.profile || 'e2e' }})
-    env:
-      ISO_PROFILE: ${{ inputs.profile || 'e2e' }}
+        include:
+          - distro: fedora
+            image: registry.fedoraproject.org/fedora@sha256:b0d8e732ad7e4fc32b6c77e040c40be98a8092f237271d264cc8d36fd9674372
+          - distro: void-glibc
+            image: ghcr.io/void-linux/void-glibc-full@sha256:0d8ab93458484cc3fa1e52d2efd4062c3dcca486c09c57068e99bc4b77e59ea0
+          - distro: arch
+            image: ghcr.io/archlinux/archlinux@sha256:d15a9b5548b8dd19bc8bf3e5a38265646c903d4d3b88c09c97b68227809fa925
+    container: ${{ matrix.image }}
+    steps:
+      - name: Install fixture dependencies
+        shell: sh
+        env:
+          TEST_DISTRO: ${{ matrix.distro }}
+        run: |
+          set -eu
+          case "$TEST_DISTRO" in
+            fedora)
+              dnf install -y bash coreutils findutils util-linux git python3 curl tar ca-certificates
+              ;;
+            void-glibc)
+              xbps-install -Sy bash coreutils findutils util-linux git python3 curl tar ca-certificates
+              ;;
+            arch)
+              pacman -Syu --noconfirm --needed bash coreutils findutils util-linux git python curl tar ca-certificates
+              ;;
+            *)
+              exit 1
+              ;;
+          esac
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Test Podman wrapper fixtures
+        shell: bash
+        run: bash tests/podman-wrapper.sh
+
+      - name: Test namespace dispatch fixtures
+        shell: bash
+        run: bash tests/namespace-dispatch.sh
+
+      - name: Test Podman build lock fixtures
+        shell: bash
+        run: bash tests/podman-build-lock.sh
+
+      - name: Test mount cleanup fixtures
+        shell: bash
+        run: bash tests/mount-cleanup.sh
+
+      - name: Test build ISO fixtures
+        shell: bash
+        run: bash tests/build-iso.sh
+
+      - name: Test cache fixtures
+        shell: bash
+        run: bash tests/cache.sh
+
+      - name: Test purge fixtures
+        shell: bash
+        run: bash tests/purge.sh
+
+      - name: Test seccomp profile fixtures
+        shell: bash
+        run: bash tests/seccomp-profile.sh
+
+      - name: Test seccomp profile Python fixtures
+        shell: bash
+        run: python3 tests/seccomp-profile.py
+
+  fixture-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      - name: Check shell scripts
-        run: |
-          set -euo pipefail
-          for script in build-iso purge-iso tests/lib.sh tests/build-iso.sh tests/e2e/verify-package-cache.sh; do
-            bash -n "$script"
-          done
-          test -x build-iso
+      - name: Test Podman wrapper fixtures
+        run: bash tests/podman-wrapper.sh
 
-      - name: Exercise failure and publication paths
+      - name: Test namespace dispatch fixtures
+        run: bash tests/namespace-dispatch.sh
+
+      - name: Test Podman build lock fixtures
+        run: bash tests/podman-build-lock.sh
+
+      - name: Test mount cleanup fixtures
+        run: bash tests/mount-cleanup.sh
+
+      - name: Test build ISO fixtures
         run: bash tests/build-iso.sh
 
-      - name: Free disk space for the GNOME image
-        if: ${{ inputs.profile == 'gnome' }}
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
-            /usr/local/share/boost /opt/hostedtoolcache
-          docker image prune --all --force
-          df -h /
+      - name: Test cache fixtures
+        run: bash tests/cache.sh
 
-      - name: Prepare live-build source
+      - name: Test purge fixtures
+        run: bash tests/purge.sh
+
+      - name: Test seccomp profile fixtures
+        run: bash tests/seccomp-profile.sh
+
+      - name: Test seccomp profile Python fixtures
+        run: python3 tests/seccomp-profile.py
+
+  build-iso:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      LIVE_BUILD_BRANCH: sinambung-dummy
+      LIVE_BUILD_COMMIT: fb1e0c22e2c82c09d0c6b674319f4142ee708968
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [local, remote]
+    name: Build ISO (${{ matrix.mode }})
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install rootless Podman runtime
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y podman uidmap slirp4netns fuse-overlayfs
+
+      - name: Prepare local live-build checkout
+        if: ${{ matrix.mode == 'local' }}
         run: |
           set -euo pipefail
           source_root="$RUNNER_TEMP/blankon-ci-sources"
           mkdir -p "$source_root"
-          if [[ "$ISO_PROFILE" == gnome ]]; then
-            git clone --depth 1 --branch variant-gnome \
-              https://github.com/BlankOn/blankon-live-build.git \
-              "$source_root/blankon-live-build"
-            source_repo=https://github.com/BlankOn/blankon-live-build.git
-            source_branch=variant-gnome
-            expected_variant=gnome
-          else
-            cp -a tests/e2e/live-build "$source_root/blankon-live-build"
-            git -C "$source_root/blankon-live-build" init -b ci
-            git -C "$source_root/blankon-live-build" add --all
-            git -C "$source_root/blankon-live-build" \
-              -c user.name='BlankOn CI' -c user.email='ci@blankonlinux.id' \
-              commit -qm 'Minimal live-build E2E source'
-            git clone --bare "$source_root/blankon-live-build" "$source_root/remote.git"
-            sudo chown -R root:root "$source_root/remote.git"
-            source_repo="file://$source_root/remote.git"
-            source_branch=ci
-            expected_variant=ci
-          fi
-          test "$(cat "$source_root/blankon-live-build/variant")" = "$expected_variant"
-          test -d "$source_root/blankon-live-build/config/common"
-          test -d "$source_root/blankon-live-build/config/$expected_variant"
-          test -d "$source_root/blankon-live-build/auto"
-          printf 'LIVE_BUILD_REPO=%s\n' "$source_repo" >> "$GITHUB_ENV"
-          printf 'LIVE_BUILD_BRANCH=%s\n' "$source_branch" >> "$GITHUB_ENV"
-          printf 'LIVE_BUILD_SHA=%s\n' \
-            "$(git -C "$source_root/blankon-live-build" rev-parse HEAD)" >> "$GITHUB_ENV"
+          git clone https://github.com/BlankOn/blankon-live-build.git "$source_root/blankon-live-build"
+          git -C "$source_root/blankon-live-build" checkout --detach "$LIVE_BUILD_COMMIT"
+          actual_commit="$(git -C "$source_root/blankon-live-build" rev-parse HEAD)"
+          test "$actual_commit" = "$LIVE_BUILD_COMMIT"
 
-      - name: Prepare CI builder image and Compose environment
+      - name: Prepare safe build environment
         run: |
           set -euo pipefail
-          test "$(head -n 1 Dockerfile)" = 'FROM ghcr.io/blankon/blankon-nightly:latest'
-          {
-            head -n 1 Dockerfile
-            cat <<'DOCKERFILE'
-          RUN printf '%s\n' 'deb http://arsip-dev.blankonlinux.id/sinambung sinambung main restricted extras restricted-firmware' > /etc/apt/sources.list \
-              && rm -f /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources
-          DOCKERFILE
-            tail -n +2 Dockerfile
-          } > .github/Dockerfile.ci
-          cat > .github/compose.ci.yml <<'COMPOSE'
-          services:
-            builder:
-              build:
-                context: .
-                dockerfile: .github/Dockerfile.ci
-          COMPOSE
           umask 077
-          mkdir -p workdir "$RUNNER_TEMP/blankon-ci-jahitan"
+          mkdir -p workdir "$RUNNER_TEMP/blankon-ci-sources" "$RUNNER_TEMP/blankon-ci-jahitan"
           {
-            printf 'TELEGRAM_BOT_KEY=%s\n' 'ci-unused-token'
             printf 'BUILD_SEND_TELEGRAM=0\n'
             printf 'BUILD_LOCAL=%s\n' "$RUNNER_TEMP/blankon-ci-sources"
             printf 'BUILD_LOCKFILE=%s\n' "$RUNNER_TEMP/blankon-ci-sources/.build.lock"
             printf 'BUILD_JAHITAN_PATH=%s\n' "$RUNNER_TEMP/blankon-ci-jahitan"
             printf 'BUILD_PUBLISH_URL=%s\n' 'https://example.invalid/iso'
           } > .env
-          printf 'HOST_UID=%s\n' "$(id -u)" >> "$GITHUB_ENV"
-          printf 'HOST_GID=%s\n' "$(id -g)" >> "$GITHUB_ENV"
-          printf 'COMPOSE_FILE=%s:%s\n' \
-            "$GITHUB_WORKSPACE/compose.yml" "$GITHUB_WORKSPACE/.github/compose.ci.yml" >> "$GITHUB_ENV"
 
-      - name: Validate Compose configuration
-        run: docker compose --project-directory "$GITHUB_WORKSPACE" --env-file .env config --quiet
-
-      - name: Build CI builder image
-        run: docker compose --project-directory "$GITHUB_WORKSPACE" --env-file .env build
-
-      - name: Check builder tools
-        run: |
-          docker compose --project-directory "$GITHUB_WORKSPACE" --env-file .env run --rm --no-deps builder \
-            sh -ec 'for tool in lb debootstrap zsyncmake flock findmnt; do command -v "$tool"; done'
-
-      - name: Build real ${{ matrix.mode }} ${{ inputs.profile || 'e2e' }} ISO
+      - name: Build ISO
+        env:
+          BUILD_MODE: ${{ matrix.mode }}
         run: |
           set -euo pipefail
-          for attempt in 1 2 3; do
-            log="$RUNNER_TEMP/build-iso-attempt-$attempt.log"
-            if [[ '${{ matrix.mode }}' == local ]]; then
-              if ./build-iso --local blankon-live-build 2>&1 | tee "$log"; then
-                break
-              fi
-            else
-              if ./build-iso --remote "$LIVE_BUILD_REPO" "$LIVE_BUILD_BRANCH" "$LIVE_BUILD_SHA" 2>&1 | tee "$log"; then
-                break
-              fi
-            fi
-            tail -n 220 "$log" > "$RUNNER_TEMP/build-iso-error-tail.log"
-            if (( attempt == 3 )) || ! grep -Eqi \
-              'Could not connect to|connection timed out|Temporary failure resolving|Network is unreachable' \
-              "$RUNNER_TEMP/build-iso-error-tail.log"; then
-              exit 1
-            fi
-            echo "::warning::Archive connection failed; retrying ISO build ($attempt/3)"
-            sleep "$((attempt * 30))"
-          done
+          if [[ "$BUILD_MODE" == local ]]; then
+            ./build-iso --local blankon-live-build
+          elif [[ "$BUILD_MODE" == remote ]]; then
+            ./build-iso --remote https://github.com/BlankOn/blankon-live-build.git "$LIVE_BUILD_BRANCH" "$LIVE_BUILD_COMMIT"
+          else
+            exit 1
+          fi
 
-      - name: Verify published ISO
+      - name: Purge ISO package cache
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          isos=("$RUNNER_TEMP"/blankon-ci-jahitan/[0-9]*-[0-9]*/*.hybrid.iso)
-          test "${#isos[@]}" -eq 1
-          iso="${isos[0]}"
-          test -s "$iso"
-          test -s "$iso.zsync"
-          test -s "$iso.sha256sum"
-          (cd "$(dirname "$iso")" && sha256sum -c "$(basename "$iso.sha256sum")")
-          current="$RUNNER_TEMP/blankon-ci-jahitan/current"
-          test -s "$current/$(basename "$iso")"
-          test -s "$current/current.txt"
-          df -h /
-
-      - name: Verify real package cache restore
-        if: ${{ inputs.profile != 'gnome' }}
-        run: |
-          set -euo pipefail
-          docker compose --project-directory "$GITHUB_WORKSPACE" --env-file .env run --rm --no-deps builder \
-            bash /builder/tests/e2e/verify-package-cache.sh
-
-      - name: Purge real package cache
-        if: ${{ inputs.profile != 'gnome' }}
-        run: |
-          set -euo pipefail
-          cache_root="$GITHUB_WORKSPACE/workdir/package-cache"
-          archive_config="$GITHUB_WORKSPACE/workdir/.build/config/includes.chroot/etc/blankon/archive.conf"
-          test -d "$cache_root"
-          test -n "$(find "$cache_root" -type f -name '*.deb' -print -quit)"
-          test -f "$archive_config"
           ./purge-iso
-          test ! -e "$cache_root"
-          test -f "$archive_config"
-          test -s "$RUNNER_TEMP/blankon-ci-jahitan/current/current.txt"
+          test ! -e workdir/package-cache

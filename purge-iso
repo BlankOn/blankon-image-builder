@@ -3,38 +3,169 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 
+validate_purge_arguments() {
+  if [[ "$#" -ne 0 ]]; then
+    echo 'Usage: purge-iso' >&2
+    return 2
+  fi
+}
+
+validate_host_purge_runtime() {
+  if ! command -v podman >/dev/null 2>&1; then
+    echo 'Error: Podman is required.' >&2
+    exit 1
+  fi
+  if [[ "$(env -u TELEGRAM_BOT_KEY -u TELEGRAM_BOT_KEY_FILE podman info --format '{{.Host.Security.Rootless}}')" != true ]]; then
+    echo 'Error: A rootless Podman engine is required.' >&2
+    exit 1
+  fi
+}
+
+acquire_host_package_cache_lock() {
+  local package_cache_lock
+  if [[ -L "$SCRIPT_DIR/workdir" ]]; then
+    echo 'Error: workdir cannot be a symlink.' >&2
+    exit 1
+  fi
+  mkdir -p -- "$SCRIPT_DIR/workdir" || exit 1
+  package_cache_lock="$SCRIPT_DIR/workdir/.package-cache.lock"
+  if [[ -L "$package_cache_lock" ]]; then
+    echo 'Error: Package cache lock cannot be a symlink.' >&2
+    exit 1
+  fi
+  if [[ ! -e "$package_cache_lock" ]]; then
+    ( set -o noclobber; : > "$package_cache_lock" ) 2>/dev/null || exit 1
+  fi
+  if [[ ! -f "$package_cache_lock" ]]; then
+    echo 'Error: Package cache lock must be a regular file.' >&2
+    exit 1
+  fi
+  exec {LOCK_FD}>>"$package_cache_lock" || exit 1
+  if ! flock -n "$LOCK_FD"; then
+    echo 'Error: Package cache is in use by another build or purge.' >&2
+    exit 1
+  fi
+}
+
+cleanup_builder_iid_file() {
+  [[ -z "${BUILDER_IID_FILE:-}" ]] || rm -f -- "$BUILDER_IID_FILE"
+}
+
+run_host_purge() {
+  validate_purge_arguments "$@" || exit $?
+  acquire_host_package_cache_lock
+  local package_cache="$SCRIPT_DIR/workdir/package-cache"
+  if [[ -L "$package_cache" || ( -e "$package_cache" && ! -d "$package_cache" ) ]]; then
+    echo "Error: Unsafe package-cache path: $package_cache" >&2
+    exit 1
+  fi
+  if [[ ! -e "$package_cache" ]]; then
+    return 0
+  fi
+  validate_host_purge_runtime
+  BUILDER_IID_FILE=$(mktemp "${TMPDIR:-/tmp}/blankon-purge-builder-iid.XXXXXXXX") || exit 1
+  trap cleanup_builder_iid_file EXIT
+  env -u TELEGRAM_BOT_KEY -u TELEGRAM_BOT_KEY_FILE podman build \
+    --iidfile "$BUILDER_IID_FILE" \
+    --tag blankon-image-builder:podman \
+    --file "$SCRIPT_DIR/Dockerfile" "$SCRIPT_DIR"
+  BUILDER_IMAGE_ID=$(<"$BUILDER_IID_FILE")
+  if [[ ! "$BUILDER_IMAGE_ID" =~ ^sha256:[a-fA-F0-9]{64}$ ]]; then
+    echo 'Error: Podman returned a missing or invalid builder image ID.' >&2
+    exit 1
+  fi
+  local -a arguments=(
+    run --rm
+    --userns=host
+    --user 0:0
+    --workdir /workdir
+    --volume "$SCRIPT_DIR/workdir:/workdir:rw"
+    --volume "$SCRIPT_DIR/workdir/.package-cache.lock:/workdir/.package-cache.lock:ro"
+    --env BUILDER_CONTAINER=1
+    --env PACKAGE_CACHE_LOCK_HELD=1
+    "$BUILDER_IMAGE_ID" /usr/local/bin/purge-iso
+  )
+  env -u TELEGRAM_BOT_KEY -u TELEGRAM_BOT_KEY_FILE podman "${arguments[@]}"
+}
+
+acquire_container_package_cache_lock() {
+  if [[ "${PACKAGE_CACHE_LOCK_HELD:-}" != 1 ]]; then
+    if [[ -L "$PWD/.package-cache.lock" ]]; then
+      echo "Error: Package cache lock cannot be a symlink: $PWD/.package-cache.lock" >&2
+      exit 1
+    fi
+    if [[ ! -e "$PWD/.package-cache.lock" ]]; then
+      if ! ( set -o noclobber; : > "$PWD/.package-cache.lock" ) 2>/dev/null; then
+        echo "Error: Cannot safely create package cache lock: $PWD/.package-cache.lock" >&2
+        exit 1
+      fi
+    fi
+    if [[ ! -f "$PWD/.package-cache.lock" || -L "$PWD/.package-cache.lock" ]]; then
+      echo "Error: Package cache lock must be a regular file: $PWD/.package-cache.lock" >&2
+      exit 1
+    fi
+    exec {LOCK_FD}>>"$PWD/.package-cache.lock" || exit 1
+    if ! flock -n "$LOCK_FD"; then
+      echo "Error: Package cache is in use by another build or purge" >&2
+      exit 1
+    fi
+  fi
+}
+
+validate_package_cache_for_removal() {
+  local cache="$PWD/package-cache" path target real_cache paths mounts
+  VALIDATED_PACKAGE_CACHE=
+  if [[ -L "$cache" || ( -e "$cache" && ! -d "$cache" ) ]]; then
+    echo "Error: Unsafe package-cache path: $cache" >&2
+    exit 1
+  fi
+  if [[ -e "$cache" ]]; then
+    real_cache=$(realpath -- "$cache") || exit 1
+    if [[ "$real_cache" != "$PWD/package-cache" || "$real_cache" == / ]]; then
+      echo 'Error: Unsafe package-cache location' >&2
+      exit 1
+    fi
+    VALIDATED_PACKAGE_CACHE=$real_cache
+    paths=$(find -P "$cache" -mindepth 1 -print) || {
+      echo 'Error: Cannot inspect package cache' >&2
+      exit 1
+    }
+    mounts=$(findmnt --raw --noheadings --output TARGET) || {
+      echo 'Error: Cannot inspect mounts' >&2
+      exit 1
+    }
+    while IFS= read -r path; do
+      if [[ -L "$path" ]]; then
+        echo "Error: Symlink in package cache: $path" >&2
+        exit 1
+      fi
+    done <<< "$paths"
+    while IFS= read -r target; do
+      printf -v target '%b' "$target"
+      if [[ "$target" == "$real_cache" || "$target" == "$real_cache/"* ]]; then
+        echo "Error: Mount beneath package cache: $target" >&2
+        exit 1
+      fi
+    done <<< "$mounts"
+  fi
+}
+
+remove_package_cache() {
+  if [[ -z "${VALIDATED_PACKAGE_CACHE:-}" ]]; then
+    return 0
+  fi
+  rm -rf -- "$VALIDATED_PACKAGE_CACHE"
+}
+
+run_container_purge() {
+  acquire_container_package_cache_lock
+  validate_package_cache_for_removal
+  remove_package_cache
+}
+
 if [[ -z "${BUILDER_CONTAINER:-}" ]]; then
-  [[ ! -f "$SCRIPT_DIR/.env" ]] || source "$SCRIPT_DIR/.env"
-  [[ -f "$SCRIPT_DIR/.env" ]] || { echo "Error: Environment file not found: $SCRIPT_DIR/.env" >&2; exit 1; }
-  command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 || { echo "Error: Docker Compose is required" >&2; exit 1; }
-  BUILD_LOCAL="${BUILD_LOCAL:?BUILD_LOCAL is required}"
-  [[ "$BUILD_LOCAL" == /* && -d "$BUILD_LOCAL" && ! -L "$BUILD_LOCAL" ]] || { echo "Error: BUILD_LOCAL must be a safe absolute directory" >&2; exit 1; }
-  BUILD_LOCAL=$(realpath -- "$BUILD_LOCAL")
-  exec {LOCK_FD}>"$SCRIPT_DIR/workdir/.package-cache.lock"
-  flock -n "$LOCK_FD" || { echo "Error: Package cache is in use by another build or purge" >&2; exit 1; }
-  host_uid=$(id -u)
-  host_gid=$(id -g)
-  HOST_UID="$host_uid" HOST_GID="$host_gid" BUILD_LOCAL="$BUILD_LOCAL" PACKAGE_CACHE_LOCK_HELD=1 docker compose --project-directory "$SCRIPT_DIR" --env-file "$SCRIPT_DIR/.env" run --build --rm -e PACKAGE_CACHE_LOCK_HELD=1 builder /builder/purge-iso
+  run_host_purge "$@"
   exit $?
 fi
 
-if [[ "${PACKAGE_CACHE_LOCK_HELD:-}" != 1 ]]; then
-  exec {LOCK_FD}>"$PWD/.package-cache.lock"
-  flock -n "$LOCK_FD" || { echo "Error: Package cache is in use by another build or purge" >&2; exit 1; }
-fi
-cache="$PWD/package-cache"
-[[ ! -L "$cache" && ( ! -e "$cache" || -d "$cache" ) ]] || { echo "Error: Unsafe package-cache path: $cache" >&2; exit 1; }
-if [[ -e "$cache" ]]; then
-  real_cache=$(realpath -- "$cache")
-  [[ "$real_cache" == "$PWD/package-cache" && "$real_cache" != / ]] || { echo "Error: Unsafe package-cache location" >&2; exit 1; }
-  paths=$(find -P "$cache" -mindepth 1 -print) || { echo "Error: Cannot inspect package cache" >&2; exit 1; }
-  mounts=$(findmnt --raw --noheadings --output TARGET) || { echo "Error: Cannot inspect mounts" >&2; exit 1; }
-  while IFS= read -r path; do
-    [[ ! -L "$path" ]] || { echo "Error: Symlink in package cache: $path" >&2; exit 1; }
-  done <<< "$paths"
-  while IFS= read -r target; do
-    printf -v target '%b' "$target"
-    [[ "$target" != "$real_cache" && "$target" != "$real_cache/"* ]] || { echo "Error: Mount beneath package cache: $target" >&2; exit 1; }
-  done <<< "$mounts"
-  rm -rf -- "$real_cache"
-fi
+run_container_purge

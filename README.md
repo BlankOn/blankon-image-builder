@@ -1,168 +1,52 @@
-# BlankOn image-builder
+# BlankOn image builder
 
-Orchestration for building BlankOn live-build images. `build-iso` validates the
-request, then runs the build through Docker Compose in the privileged, root
-`builder` container. Host directories are mounted at their same absolute paths
-inside the container.
+## WHY using container?
+Because why not
 
-Keep `.env` beside `build-iso`; `build-iso` loads that file from its own
-repository directory.
+## Host requirements
 
-## Requirements
+- Linux with a working rootless Podman setup. Docker and Compose are not required.
+- Host entrypoints also need Bash, coreutils, findutils, util-linux, and Python 3. `curl` is needed only for Telegram notifications.
 
-- Linux host with Docker Engine and the Docker Compose plugin.
-- Permission to use Docker, including privileged containers.
-- Writable host directories for `BUILD_LOCAL`, `BUILD_JAHITAN_PATH`, and the
-  repository's `workdir`; Docker must be allowed to mount them.
-- A Telegram bot token for build notifications. Keep it private.
+## Configure
 
-The container is intentionally privileged and runs as root because live-build
-needs mounts and root-owned build state. Do not remove that requirement from
-the Compose service.
-
-Run `./build-iso` as the host user that should own generated files. The
-`workdir` directory, its generated build directories, and `BUILD_JAHITAN_PATH`
-itself, plus the new date-stamped output/`current` copy, are handed to that
-user's numeric UID/GID after logs are written, including after failed builds.
-Older date-stamped outputs are not changed.
-Handoff is skipped if a mount exists beneath either target. The builder remains
-root and privileged; root callers consequently retain ownership.
-
-## Layout and setup
-
-Keep the two repositories as siblings below `BUILD_LOCAL`:
-
-```text
-/srv/blankon/
-├── blankon-image-builder/
-└── blankon-live-build/
-```
-
-Clone both repositories, then configure the builder:
+Keep a private, untracked `.env` beside `build-iso`. Start with:
 
 ```sh
-cd /srv/blankon
-git clone <builder-repo> blankon-image-builder
-git clone <live-build-repo> blankon-live-build
-cd blankon-image-builder
 cp .env.example .env
 ```
 
-Edit every required value in `.env`:
+Set these four required values in `.env`:
 
-- `TELEGRAM_BOT_KEY`: Telegram bot token used for build notifications.
-- `BUILD_LOCKFILE`: absolute **host** path to the build lock, preferably under
-  `BUILD_LOCAL` so the mounted container sees the same file, such as
-  `/srv/blankon/.blankon-build.lock`; it must be writable. The lock prevents
-  concurrent builds.
-- `BUILD_PUBLISH_URL`: base URL used for published artifacts and their zsync
-  metadata.
-- `BUILD_JAHITAN_PATH`: absolute, writable **host** directory for build
-  output. It is mounted into the container at the same path.
-- `BUILD_LOCAL`: absolute, existing, readable **host** directory containing
-  local source checkouts. It is mounted into the container at the same path.
-- `BUILD_SEND_TELEGRAM`: optional; set to `0` to suppress build notifications,
-  for example in CI. Notifications are enabled by default.
+```dotenv
+BUILD_LOCAL=/srv/blankon
+BUILD_LOCKFILE=/srv/blankon/.blankon-build.lock
+BUILD_JAHITAN_PATH=/srv/blankon/jahitan
+BUILD_PUBLISH_URL=http://arsip-dev.blankonlinux.id/iso
+```
 
-`.env` contains a secret and is ignored by Git. Keep it untracked; never paste
-its contents into logs or issues.
+`BUILD_LOCAL` is the existing root containing the sibling builder and live-build checkouts. `BUILD_LOCKFILE` is the host lock path, `BUILD_JAHITAN_PATH` is a writable artifact directory, and `BUILD_PUBLISH_URL` is the publication base URL.
 
-## Local builds
+Telegram notifications are optional and disabled by default. To opt in, set `BUILD_SEND_TELEGRAM=1` and provide `TELEGRAM_BOT_KEY` in `.env`.
 
-Run from `blankon-image-builder`:
+## Build
+
+Build from a local checkout:
 
 ```sh
-./build-iso --local blankon-live-build
 ./build-iso --local /srv/blankon/blankon-live-build
 ```
 
-Relative paths resolve beneath `BUILD_LOCAL`. Absolute paths are accepted only
-when they remain beneath the canonical `BUILD_LOCAL` directory. The source
-checkout must contain `variant`, `config/common`, `config/<variant>`, and
-`auto`, where `<variant>` is the value in `variant`. Local builds publish the
-same artifacts as remote builds; only the source preparation differs.
-
-## Remote builds
+Or build from a remote repository branch, optionally pinned to a commit:
 
 ```sh
 ./build-iso --remote <repo> <branch> [commit]
 ```
 
-The container clones `<repo>` at `<branch>` into its work area, optionally
-checks out `<commit>`, builds the selected revision, and publishes the results
-under `BUILD_JAHITAN_PATH`. Omit `commit` to use the branch tip. Both local and
-remote builds send their configured Telegram notification.
+Artifacts are written under `$BUILD_JAHITAN_PATH`.
 
-## State and output
-
-- `workdir/.build`: prepared live-build tree and build logs.
-- `workdir/tmp`: remote clones and transient build state.
-- `BUILD_JAHITAN_PATH`: local and remote date-stamped output, copied `current`
-  output, ISO files, checksums, metadata, and build logs.
-- Generated build state is ignored by Git. Preserve `workdir` and the output
-  directory when you need logs or artifacts after a run.
-
-Downloaded `.deb` files are reused from `workdir/package-cache` across builds
-with the same architecture and `archive.conf` (including different variants).
-The chroot and bootstrap filesystem still start fresh. To discard only the
-download cache, run `./purge-iso` while no build is running; it leaves
-`workdir/.build` and Jahitan outputs intact. A cache purge refuses nested mounts
-and unsafe paths.
-
-## Validate without building an ISO
-
-Use the same environment file as `build-iso`:
+Optionally, purge the package cache with:
 
 ```sh
-export HOST_UID=$(id -u) HOST_GID=$(id -g)
-docker compose --env-file .env config --quiet
-docker compose --env-file .env build
+./purge-iso
 ```
-
-These commands validate Compose interpolation and build the Docker image only;
-they do not build an ISO or contact Telegram.
-
-CI has separate Build ISO, Cache, and Purge ISO workflows on pushes and pull
-requests. Build ISO runs its focused failure-path checks, then builds a small,
-real Sinambung ISO in both local and remote mode from
-`tests/e2e/live-build`. That source uses the BlankOn archive and signing key,
-debootstrap, the live kernel and boot components, and the production ISO format.
-It omits the desktop, installer, and firmware package lists and uses faster
-compression. The remote job commits the same fixture into a temporary Git
-repository and exercises the clone, branch, and commit path through `--remote`.
-Build ISO checks that each ISO, checksum, zsync file, and `current` output were
-published. The ISOs stay on the temporary runner and are not uploaded as
-Actions artifacts. Archive connection timeouts are retried up to twice; other
-build failures fail immediately. To build the complete GNOME image in both
-modes, run the Build ISO workflow manually with the `gnome` profile; that
-profile uses the `blankon-live-build` `variant-gnome` branch on GitHub.
-After each small E2E ISO, CI also checks that real downloaded `.deb` files were
-saved and that restoring the cache into a fresh workspace preserves their
-SHA-256 hashes. It then purges that same runner's real package cache and checks
-that the build configuration and published output remain. The separate Cache
-and Purge ISO workflows test reuse, invalidation, locking, and unsafe paths
-with fast fixtures on their own runners.
-
-CI suppresses Telegram notifications. Its temporary builder image selects the
-Sinambung archive because the published base image still points at the retired
-Verbeek archive; the repository's Dockerfile is unchanged. Cache checks saving,
-reuse, `archive.conf` key changes, and the shared build/purge lock. Purge ISO
-checks cache removal, symlinks, and mount refusal. Publication stages a new
-`current` before replacing it; failed staging leaves the previous output
-available.
-
-## Troubleshooting
-
-- **Missing `BUILD_LOCAL`**: copy `.env.example` to `.env`, set an absolute
-  existing path, and run from this repository.
-- **Local path outside `BUILD_LOCAL`**: move the checkout below that directory
-  or use a relative path such as `blankon-live-build`.
-- **Docker unavailable**: start Docker Engine and verify the Compose plugin with
-  `docker compose version`; ensure the user can use Docker.
-- **Mount or permission errors**: create the configured host directories, make
-  them writable for Docker, and check Docker's host-path sharing policy.
-- **Stale lock**: confirm no build is running, then remove the lock in the
-  environment visible to the container, or let the next run remove it after
-  confirming its recorded PID is no longer active.
-- **Missing Telegram token**: set `TELEGRAM_BOT_KEY` in `.env`; do not disclose
-  the token in command output, logs, or issue reports.
